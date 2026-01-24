@@ -1,0 +1,37 @@
+#cloud-config
+
+# ---- System identity ----
+hostname: hv-01
+fqdn: hv-01.familyofryans.com
+
+# ---- Users and access ----
+users:
+  - name: svc-ansible
+    gecos: Ansible Automation User
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    groups: users, sudo
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINNNxBpnr25dNfo6AYBcq59yfVJ+dB8tjOK8VhQi7SSL
+
+# Disable risky defaults
+disable_root: true
+ssh_pwauth: false
+
+# ---- Package behavior ----
+package_update: true
+package_upgrade: false
+
+packages:
+  - curl
+  - vim
+  - ca-certificates
+
+# ---- Optional but useful ----
+timezone: US/Mountain
+
+# ---- Final signal ----
+final_message: |
+  cloud-init has finished.
+  System identity and SSH access are configured.
+  Ready for Ansible.
