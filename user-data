@@ -26,6 +26,7 @@ packages:
   - curl
   - vim
   - ca-certificates
+  - openssh-server
 
 # ---- Optional but useful ----
 timezone: US/Mountain
