@@ -1,0 +1,13 @@
+---
+- name: Assert permanent hostname (replace bootstrap state)
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    permanent_hostname: "{{ hypervisor_hostname }}"
+
+  tasks:
+    - name: Set permanent hostname
+      ansible.builtin.hostname:
+        name: "{{ permanent_hostname }}"
