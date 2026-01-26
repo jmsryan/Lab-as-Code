@@ -5,6 +5,10 @@
 This document defines the **explicit responsibility boundaries** between
 automation tools used in the hypervisor platform.
 
+## Release Status
+
+Pre-release v0.1.0 (January 26, 2026). Scope: hypervisor initial configuration.
+
 The goal is to ensure:
 - deterministic system bootstrap
 - clear ownership of long-lived state

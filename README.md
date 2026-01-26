@@ -1,10 +1,14 @@
 # Lab-as-Code
-Homelab declaritive configuration from bare-metal hypervisor to docker applications
+Homelab declarative configuration from bare-metal hypervisor to docker applications
+
+Pre-release: v0.1.0 (January 26, 2026) - hypervisor initial configuration ready
 
 
 
 ## Documentation
 
-See `docs/hypervisor-design.md` for architectural context  
-See `docs/automation-boundaries.md` for tooling responsibility  
+See `docs/hypervisor-design.md` for architectural context
+See `docs/automation-boundaries.md` for tooling responsibility
 See `docs/hypervisor-networking.md` for network role and traffic model
+See `docs/hypervisor-bootstrap.md` for bootstrap steps
+See `docs/implementation-notes.md` for build observations

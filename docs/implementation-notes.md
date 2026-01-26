@@ -3,6 +3,10 @@
 This document captures **non-architectural lessons learned** during
 implementation.
 
+## Release Status
+
+Pre-release v0.1.0 (January 26, 2026). Scope: hypervisor initial configuration.
+
 These notes document tool behavior, minor corrections, and practical
 observations that do not rise to the level of architectural decisions.
 
