@@ -61,8 +61,17 @@
           - ca-certificates
           - openssh-server
         state: present
+    # --- Phase 7: Ensure time sync service is installed and running ---
+    - name: Ensure time synchronization service is installed and running
+      ansible.builtin.package:
+        name: chrony
+        state: present
+    - name: Ensure chrony is started and enabled
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
     
-
 
   handlers:
     - name: Reload sshd
