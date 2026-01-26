@@ -8,7 +8,7 @@
     # --- Phase 1: Assert authoritative identity ---
     - name: Set permanent hostname
       ansible.builtin.hostname:
-        name: "{{ hypervisor_hostname }}"
+        name: "{{ system_hostname }}"
 
     # --- Phase 2: Assert authoritative SSH daemon policy ---
     - name: Enforce SSH daemon configuration (authoritative)
@@ -44,7 +44,7 @@
     # --- Phase 4: Assert authoritative timezone ---
     - name: Set system timezone
       ansible.builtin.timezone:
-        name: "{{ hypervisor_timezone }}"
+        name: "{{ system_timezone }}"
     # --- Phase 5: Assert SSH Authorized Keys for Automation User ---
     - name: Ensure SSH authorized keys for automation user
       ansible.builtin.authorized_key:
