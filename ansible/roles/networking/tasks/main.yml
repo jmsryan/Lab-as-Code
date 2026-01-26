@@ -1,0 +1,214 @@
+---
+# Phase 0: Observation & invariants
+# This phase makes NO changes to networking.
+# It exists solely to confirm assumptions before any risky operations.
+
+- name: Gather minimal facts required for networking decisions
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+      - hardware
+      - virtual
+
+# -----------------------------
+# Identify management interface
+# -----------------------------
+
+- name: Assert default IPv4 interface is known
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4 is defined
+      - ansible_default_ipv4.interface is defined
+      - ansible_default_ipv4.address is defined
+      - ansible_default_ipv4.gateway is defined
+    fail_msg: >
+      Unable to determine default IPv4 interface.
+      Refusing to proceed with networking role.
+    success_msg: >
+      Default IPv4 interface identified as {{ ansible_default_ipv4.interface }}.
+
+- name: Display management interface context
+  ansible.builtin.debug:
+    msg:
+      - "Management interface: {{ ansible_default_ipv4.interface }}"
+      - "Management IP: {{ ansible_default_ipv4.address }}"
+      - "Default gateway: {{ ansible_default_ipv4.gateway }}"
+
+# --------------------------------
+# Verify networking backend control
+# --------------------------------
+
+- name: Check for /etc/network/interfaces
+  ansible.builtin.stat:
+    path: /etc/network/interfaces
+  register: interfaces_file
+
+- name: Assert ifupdown-style networking is in use
+  ansible.builtin.assert:
+    that:
+      - interfaces_file.stat.exists
+    fail_msg: >
+      /etc/network/interfaces does not exist.
+      This role assumes ifupdown/ifupdown2 is authoritative.
+      Refusing to proceed.
+    success_msg: >
+      /etc/network/interfaces exists and will be treated as authoritative.
+
+# --------------------------------
+# Ensure NetworkManager is not active
+# --------------------------------
+
+- name: Check NetworkManager service state
+  ansible.builtin.systemd:
+    name: NetworkManager
+  register: nm_service
+  failed_when: false
+  changed_when: false
+
+- name: Assert NetworkManager is not running
+  ansible.builtin.assert:
+    that:
+      - nm_service.status.ActiveState is not defined
+        or nm_service.status.ActiveState != "active"
+    fail_msg: >
+      NetworkManager is running.
+      This role requires exclusive control via ifupdown/ifupdown2.
+      Disable NetworkManager before proceeding.
+    success_msg: >
+      NetworkManager is not active.
+
+# --------------------------------
+# Record current network state (for operator visibility)
+# --------------------------------
+
+- name: Capture current IP addressing
+  ansible.builtin.command: ip addr show
+  register: ip_addr_output
+  changed_when: false
+
+- name: Capture current routing table
+  ansible.builtin.command: ip route show
+  register: ip_route_output
+  changed_when: false
+
+- name: Display current network state
+  ansible.builtin.debug:
+    msg:
+      - "=== ip addr ==="
+      - "{{ ip_addr_output.stdout_lines }}"
+      - "=== ip route ==="
+      - "{{ ip_route_output.stdout_lines }}"
+
+# --------------------------------
+# Phase boundary marker
+# --------------------------------
+
+- name: Phase 0 completed successfully
+  ansible.builtin.debug:
+    msg: >
+      Networking Phase 0 complete.
+      All invariants satisfied.
+      Safe to proceed to tooling and rollback preparation.
+
+# ============================================================
+# Phase 1: Tooling + rollback primitives
+# ============================================================
+
+- name: Install networking tooling required for safe changes
+  ansible.builtin.package:
+    name:
+      - ifupdown2
+      - at
+    state: present
+
+- name: Ensure atd service is enabled and running
+  ansible.builtin.systemd:
+    name: atd
+    enabled: true
+    state: started
+
+# --------------------------------
+# Backup existing network config
+# --------------------------------
+
+- name: Generate timestamp for network config backup
+  ansible.builtin.command: date +%Y%m%d%H%M%S
+  register: net_backup_ts
+  changed_when: false
+
+- name: Backup /etc/network/interfaces
+  ansible.builtin.copy:
+    src: /etc/network/interfaces
+    dest: "/etc/network/interfaces.backup.{{ net_backup_ts.stdout }}"
+    owner: root
+    group: root
+    mode: "0644"
+    remote_src: true
+
+- name: Confirm backup location
+  ansible.builtin.debug:
+    msg: >
+      Network configuration backed up to
+      /etc/network/interfaces.backup.{{ net_backup_ts.stdout }}
+
+# --------------------------------
+# Phase boundary marker
+# --------------------------------
+
+- name: Phase 1 completed successfully
+  ansible.builtin.debug:
+    msg: >
+      Networking Phase 1 complete.
+      Tooling installed and rollback prerequisites satisfied.
+      Safe to proceed to configuration staging.
+# ============================================================
+# Phase 2: Stage bridge configuration (no apply)
+# ============================================================
+
+- name: Assert required networking variables are defined
+  ansible.builtin.assert:
+    that:
+      - net_phys_iface is defined
+      - net_bridge_name is defined
+      - net_mgmt_vlan is defined
+      - net_allowed_vlans is defined
+    fail_msg: >
+      Missing required networking variables. Define these in private inventory/host_vars:
+      net_phys_iface, net_bridge_name, net_mgmt_vlan, net_allowed_vlans
+
+- name: Ensure /etc/network/interfaces.d exists
+  ansible.builtin.file:
+    path: /etc/network/interfaces.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure /etc/network/interfaces sources /etc/network/interfaces.d/*
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    line: "source /etc/network/interfaces.d/*"
+    insertafter: EOF
+    state: present
+  register: interfaces_source_line
+
+- name: Stage bridge configuration into interfaces.d
+  ansible.builtin.template:
+    src: bridge.cfg.j2
+    dest: "/etc/network/interfaces.d/bridge-{{ net_bridge_name }}.cfg"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Display staged file path (no apply performed)
+  ansible.builtin.debug:
+    msg:
+      - "Staged: /etc/network/interfaces.d/bridge-{{ net_bridge_name }}.cfg"
+      - "NOTE: Networking has NOT been reloaded or changed."
+
+- name: Phase 2 completed successfully
+  ansible.builtin.debug:
+    msg: >
+      Networking Phase 2 complete.
+      Configuration staged only (no apply).
+      Next phase will apply with rollback guard.
