@@ -1,0 +1,11 @@
+- name: Enforce SSH daemon configuration (authoritative)
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    create: false
+    marker: "# {mark} ANSIBLE MANAGED SSH POLICY"
+    block: |
+      PasswordAuthentication no
+      PermitRootLogin no
+      PubkeyAuthentication yes
+      UsePAM yes
+  notify: Reload sshd
