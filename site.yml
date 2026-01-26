@@ -1,13 +1,30 @@
 ---
-- name: Assert permanent hostname (replace bootstrap state)
-  hosts: all
+- name: Hypervisor base configuration
+  hosts: hypervisor
   become: true
   gather_facts: false
 
-  vars:
-    permanent_hostname: "{{ hypervisor_hostname }}"
-
   tasks:
+    # --- Phase 1: Assert authoritative identity ---
     - name: Set permanent hostname
       ansible.builtin.hostname:
-        name: "{{ permanent_hostname }}"
+        name: "{{ hypervisor_hostname }}"
+
+    # --- Phase 2: Assert authoritative SSH daemon policy ---
+    - name: Enforce SSH daemon configuration (authoritative)
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        create: false
+        marker: "# {mark} ANSIBLE MANAGED SSH POLICY"
+        block: |
+          PasswordAuthentication no
+          PermitRootLogin no
+          PubkeyAuthentication yes
+          UsePAM yes
+      notify: Reload sshd
+
+  handlers:
+    - name: Reload sshd
+      ansible.builtin.service:
+        name: ssh
+        state: reloaded
