@@ -22,6 +22,25 @@
           PubkeyAuthentication yes
           UsePAM yes
       notify: Reload sshd
+    - name: Ensure automation user exists
+      ansible.builtin.user:
+        name: svc-ansible
+        comment: "Automation User"
+        shell: /bin/bash
+        state: present
+        create_home: yes
+        groups: sudo
+        append: yes
+    - name: Ensure automation user has passwordless sudo
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/svc-ansible
+        content: |
+          svc-ansible ALL=(ALL) NOPASSWD: ALL
+        owner: root
+        group: root
+        mode: '0440'
+        validate: '/usr/sbin/visudo -cf %s'
+
 
   handlers:
     - name: Reload sshd
