@@ -5,6 +5,10 @@
 This document describes the **manual bootstrap steps** required to prepare a
 bare-metal system for Ansible-based configuration.
 
+## Release Status
+
+Pre-release v0.1.0 (January 26, 2026). Scope: hypervisor initial configuration.
+
 These steps are intentionally limited in scope and are performed **once per
 host**. After completion, all ongoing configuration and state enforcement is
 handled by automation.

@@ -10,6 +10,10 @@ It defines how the hypervisor:
 - exposes connectivity to guest virtual machines
 - avoids taking on routing or security responsibilities
 
+## Release Status
+
+Pre-release v0.1.0 (January 26, 2026). Scope: hypervisor initial configuration.
+
 This document intentionally focuses on **design intent and traffic flow**, not
 implementation-specific values or environment secrets.
 

@@ -9,6 +9,10 @@ This document defines the **intended architecture, constraints, and operational 
 - automation-owned  
 - cloud-parallel in concept  
 
+## Release Status
+
+Pre-release v0.1.0 (January 26, 2026). Scope: hypervisor initial configuration.
+
 This specification is **implementation-agnostic** and intentionally omits environment-specific secrets. It describes *design intent*, not live configuration.
 
 ---
