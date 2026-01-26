@@ -9,3 +9,16 @@
       PubkeyAuthentication yes
       UsePAM yes
   notify: Reload sshd
+- name: Restrict SSH to specific users
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^AllowUsers\b'
+    line: "AllowUsers {{ security_ssh_allow_users | join(' ') }}"
+    state: present
+    create: false
+  notify: Reload sshd
+- name: Lock root account
+  ansible.builtin.user:
+    name: root
+    password_lock: true
+  when: security_lock_root

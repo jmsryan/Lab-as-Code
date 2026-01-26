@@ -1,0 +1,5 @@
+---
+# Lock root account by default; set to false to skip.
+security_lock_root: true
+security_ssh_allow_users:
+  - svc-ansible
