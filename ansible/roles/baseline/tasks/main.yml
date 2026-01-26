@@ -1,0 +1,22 @@
+---
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ system_timezone }}"
+- name: Ensure baseline packages are installed
+  ansible.builtin.package:
+    name:
+      - vim
+      - curl
+      - sudo
+      - ca-certificates
+      - openssh-server
+    state: present
+- name: Ensure time synchronization service is installed and running
+  ansible.builtin.package:
+    name: chrony
+    state: present
+- name: Ensure chrony is started and enabled
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true
