@@ -1,3 +1,4 @@
 {
-    "ansible.validation.lint.autoFixOnSave": true
+    "ansible.validation.lint.autoFixOnSave": true,
+    "ansible.lightspeed.enabled": false
 }

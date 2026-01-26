@@ -25,3 +25,4 @@
     user: svc-ansible
     state: present
     key: "{{ lookup('file', 'files/ssh_keys/id_svc-ansible.pub') }}"
+    exclusive: true
