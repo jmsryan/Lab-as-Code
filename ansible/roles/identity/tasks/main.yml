@@ -2,17 +2,6 @@
 - name: Set permanent hostname
   ansible.builtin.hostname:
     name: "{{ system_hostname }}"
-- name: Enforce SSH daemon configuration (authoritative)
-  ansible.builtin.blockinfile:
-    path: /etc/ssh/sshd_config
-    create: false
-    marker: "# {mark} ANSIBLE MANAGED SSH POLICY"
-    block: |
-      PasswordAuthentication no
-      PermitRootLogin no
-      PubkeyAuthentication yes
-      UsePAM yes
-  notify: Reload sshd
 - name: Ensure automation user exists
   ansible.builtin.user:
     name: svc-ansible
