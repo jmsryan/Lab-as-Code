@@ -34,6 +34,17 @@
       - "Management IP: {{ ansible_default_ipv4.address }}"
       - "Default gateway: {{ ansible_default_ipv4.gateway }}"
 
+- name: Assert management interface matches declared physical interface
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4.interface == net_phys_iface
+    fail_msg: >
+      Default route is via {{ ansible_default_ipv4.interface }},
+      but net_phys_iface is set to {{ net_phys_iface }}.
+      Refusing to modify networking due to interface mismatch.
+    success_msg: >
+      Management interface matches declared physical interface ({{ net_phys_iface }}).
+
 # --------------------------------
 # Verify networking backend control
 # --------------------------------
@@ -212,3 +223,136 @@
       Networking Phase 2 complete.
       Configuration staged only (no apply).
       Next phase will apply with rollback guard.
+
+# ============================================================
+# Phase 3: Apply with rollback guard (5 minutes)
+# ============================================================
+
+- name: Determine latest /etc/network/interfaces backup for rollback
+  ansible.builtin.shell: "ls -1t /etc/network/interfaces.backup.* 2>/dev/null | head -n 1"
+  args:
+    executable: /bin/bash
+  register: latest_interfaces_backup
+  changed_when: false
+
+- name: Assert a backup exists before applying networking changes
+  ansible.builtin.assert:
+    that:
+      - latest_interfaces_backup.stdout is defined
+      - latest_interfaces_backup.stdout | length > 0
+    fail_msg: >
+      No /etc/network/interfaces.backup.* file found. Refusing to apply networking changes
+      without a known-good rollback file.
+    success_msg: >
+      Using rollback source: {{ latest_interfaces_backup.stdout }}
+
+- name: Build rollback command (restore backup, remove staged bridge file, reload)
+  ansible.builtin.set_fact:
+    rollback_cmd: >-
+      cp -f {{ latest_interfaces_backup.stdout }} /etc/network/interfaces &&
+      rm -f /etc/network/interfaces.d/bridge-{{ net_bridge_name }}.cfg &&
+      ifreload -a
+
+- name: Schedule rollback in 5 minutes using at (dead-man switch)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    echo "{{ rollback_cmd }}" | at -M now + 5 minutes
+  args:
+    executable: /bin/bash
+  register: at_schedule
+  changed_when: true
+
+- name: Extract at job id
+  ansible.builtin.set_fact:
+    rollback_job_id: "{{ (at_schedule.stdout ~ at_schedule.stderr) | regex_search('job\\s+(\\d+)', '\\1') | first }}"
+  vars:
+    # concatenate stdout/stderr because 'at' output varies
+    _unused: ""
+
+- name: Assert rollback job id was captured
+  ansible.builtin.assert:
+    that:
+      - rollback_job_id is defined
+      - rollback_job_id | length > 0
+    fail_msg: >
+      Rollback job was scheduled, but the job id could not be parsed from output:
+      {{ at_schedule.stdout }} {{ at_schedule.stderr }}
+      Refusing to proceed.
+    success_msg: >
+      Rollback armed (at job {{ rollback_job_id }}) for +5 minutes.
+
+# -----------------------------
+# Apply networking (risky step)
+# -----------------------------
+
+- name: Apply staged networking configuration (ifreload -a)
+  ansible.builtin.command: /usr/sbin/ifreload -a
+  register: ifreload_result
+  changed_when: true
+
+# Give DHCP a moment; don’t cancel rollback yet
+- name: Wait briefly for DHCP to settle on the bridge
+  ansible.builtin.pause:
+    seconds: 10
+
+# -----------------------------
+# Verify the new state locally
+# (These checks run on the host, not from the controller side.)
+# -----------------------------
+
+- name: Check bridge exists
+  ansible.builtin.command: "ip link show {{ net_bridge_name }}"
+  register: bridge_link
+  changed_when: false
+
+- name: Check IPv4 address on bridge (DHCP)
+  ansible.builtin.shell: "ip -4 -o addr show dev {{ net_bridge_name }} | awk '{print $4}'"
+  args:
+    executable: /bin/bash
+  register: bridge_ipv4
+  changed_when: false
+
+- name: Check default route uses the bridge
+  ansible.builtin.shell: "ip route show default | awk '{print $5}'"
+  args:
+    executable: /bin/bash
+  register: default_route_iface
+  changed_when: false
+
+- name: Assert bridge has DHCP IPv4 and is default route interface
+  ansible.builtin.assert:
+    that:
+      - (bridge_ipv4.stdout | trim) != ""
+      - (default_route_iface.stdout | trim) == net_bridge_name
+    fail_msg: >
+      Post-apply verification failed.
+      Bridge IPv4: '{{ bridge_ipv4.stdout | trim }}'
+      Default route iface: '{{ default_route_iface.stdout | trim }}'
+      Leaving rollback armed (job {{ rollback_job_id }}). SSH should recover automatically.
+    success_msg: >
+      Post-apply verification passed. Bridge has IPv4 '{{ bridge_ipv4.stdout | trim }}'
+      and default route is via {{ net_bridge_name }}.
+
+# -----------------------------
+# Confirm controller can still reach the host (SSH continuity)
+# -----------------------------
+
+- name: Wait for Ansible SSH connectivity to remain healthy
+  ansible.builtin.wait_for_connection:
+    timeout: 60
+
+# -----------------------------
+# Disarm rollback only after success
+# -----------------------------
+
+- name: Cancel rollback job (atrm)
+  ansible.builtin.command: "atrm {{ rollback_job_id }}"
+  register: atrm_result
+  changed_when: true
+
+- name: Phase 3 completed successfully
+  ansible.builtin.debug:
+    msg:
+      - "Networking Phase 3 complete."
+      - "Rollback job {{ rollback_job_id }} canceled."
+      - "Bridge {{ net_bridge_name }} is up with DHCP ({{ bridge_ipv4.stdout | trim }})."

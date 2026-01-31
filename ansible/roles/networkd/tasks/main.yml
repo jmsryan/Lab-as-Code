@@ -1,0 +1,477 @@
+---
+- name: Detect installed networking tools and minimal facts
+  ansible.builtin.import_tasks: detect.yml
+
+# --------------------------------
+# Preflight guardrails
+# --------------------------------
+
+- name: Assert default IPv4 interface is known
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4 is defined
+      - ansible_default_ipv4.interface is defined
+      - ansible_default_ipv4.address is defined
+      - ansible_default_ipv4.gateway is defined
+    fail_msg: >
+      Unable to determine default IPv4 interface or gateway.
+      Refusing to proceed with systemd-networkd changes.
+    success_msg: >
+      Default IPv4 interface identified as {{ ansible_default_ipv4.interface }}.
+
+- name: Check NetworkManager service state
+  ansible.builtin.systemd:
+    name: NetworkManager
+  register: nm_service
+  failed_when: false
+  changed_when: false
+
+- name: Assert NetworkManager is not active
+  ansible.builtin.assert:
+    that:
+      - nm_service.status.ActiveState is not defined
+        or nm_service.status.ActiveState != "active"
+    fail_msg: >
+      NetworkManager is running.
+      Refusing to proceed with systemd-networkd takeover.
+    success_msg: >
+      NetworkManager is not active.
+
+- name: Check ifupdown networking service state
+  ansible.builtin.systemd:
+    name: networking
+  register: ifupdown_service
+  failed_when: false
+  changed_when: false
+
+- name: Assert ifupdown networking service is not active
+  ansible.builtin.assert:
+    that:
+      - ifupdown_service.status.ActiveState is not defined
+        or ifupdown_service.status.ActiveState != "active"
+    fail_msg: >
+      ifupdown networking service is active.
+      Refusing to proceed with systemd-networkd takeover.
+    success_msg: >
+      ifupdown networking service is not active.
+
+- name: Assert systemd-networkd unit exists
+  ansible.builtin.assert:
+    that:
+      - net_tools.systemd_networkd_unit_present | bool
+    fail_msg: >
+      systemd-networkd unit not found on this host.
+      Install systemd-networkd before proceeding.
+
+- name: Set primary interface facts
+  ansible.builtin.set_fact:
+    net_primary_iface: "{{ ansible_default_ipv4.interface }}"
+    net_primary_gateway: "{{ ansible_default_ipv4.gateway }}"
+
+# --------------------------------
+# Short-circuit if networkd already owns the host
+# --------------------------------
+
+- name: Check if systemd-networkd manages the primary interface
+  ansible.builtin.shell: "networkctl status {{ net_primary_iface }} 2>/dev/null | grep -q 'Managed: yes' && echo true || echo false"
+  args:
+    executable: /bin/bash
+  register: networkd_manages_primary
+  changed_when: false
+  failed_when: false
+
+- name: Check for existing networkd config for primary interface
+  ansible.builtin.find:
+    paths: /etc/systemd/network
+    patterns: "*{{ net_primary_iface }}*.network"
+  register: networkd_iface_configs
+  failed_when: false
+
+- name: Set networkd ownership fact
+  ansible.builtin.set_fact:
+    networkd_already_controlling: >-
+      {{
+        net_tools.systemd_networkd_active == 'active'
+        or (networkd_manages_primary.stdout | trim) == 'true'
+      }}
+
+- name: Skip changes when systemd-networkd already controls the host
+  ansible.builtin.debug:
+    msg: >
+      systemd-networkd appears to be in charge of networking on this host.
+      Skipping all remaining tasks in this role.
+  when: networkd_already_controlling
+
+- name: End role processing when networkd already controls the host
+  ansible.builtin.meta: end_role
+  when: networkd_already_controlling
+
+# --------------------------------
+# Capture current topology
+# --------------------------------
+
+- name: Capture current IP addressing
+  ansible.builtin.command: ip addr show
+  register: ip_addr_output
+  changed_when: false
+
+- name: Capture current routing table
+  ansible.builtin.command: ip route show
+  register: ip_route_output
+  changed_when: false
+
+- name: Display current network state
+  ansible.builtin.debug:
+    msg:
+      - "=== ip addr ==="
+      - "{{ ip_addr_output.stdout_lines }}"
+      - "=== ip route ==="
+      - "{{ ip_route_output.stdout_lines }}"
+
+- name: Read primary interface type
+  ansible.builtin.command: "cat /sys/class/net/{{ net_primary_iface }}/type"
+  register: net_primary_iface_type
+  changed_when: false
+
+- name: Check if primary interface is a bridge
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ net_primary_iface }}/bridge"
+  register: net_primary_iface_bridge
+
+- name: Check if primary interface is a bond
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ net_primary_iface }}/bonding"
+  register: net_primary_iface_bond
+
+- name: Check if primary interface is a VLAN
+  ansible.builtin.stat:
+    path: "/proc/net/vlan/{{ net_primary_iface }}"
+  register: net_primary_iface_vlan
+
+- name: Assert primary interface is a physical NIC
+  ansible.builtin.assert:
+    that:
+      - net_primary_iface_type.stdout | trim == "1"
+      - not net_primary_iface_bridge.stat.exists
+      - not net_primary_iface_bond.stat.exists
+      - not net_primary_iface_vlan.stat.exists
+    fail_msg: >
+      Default IPv4 interface {{ net_primary_iface }} does not appear to be a physical NIC.
+      type={{ net_primary_iface_type.stdout | trim }},
+      bridge={{ net_primary_iface_bridge.stat.exists }},
+      bond={{ net_primary_iface_bond.stat.exists }},
+      vlan={{ net_primary_iface_vlan.stat.exists }}.
+      Refusing to proceed.
+
+- name: Detect primary IPv4 CIDR on default interface
+  ansible.builtin.shell: "ip -4 -o addr show dev {{ net_primary_iface }} scope global | awk '{print $4}' | head -n 1"
+  args:
+    executable: /bin/bash
+  register: net_primary_ipv4_cidr
+  changed_when: false
+
+- name: Detect if primary IPv4 is DHCP (dynamic)
+  ansible.builtin.shell: "ip -4 -o addr show dev {{ net_primary_iface }} scope global | grep -q ' dynamic ' && echo true || echo false"
+  args:
+    executable: /bin/bash
+  register: net_primary_ipv4_dynamic
+  changed_when: false
+
+- name: Detect DNS servers from resolv.conf
+  ansible.builtin.shell: "awk '/^nameserver/{print $2}' /etc/resolv.conf | tr '\n' ' '"
+  args:
+    executable: /bin/bash
+  register: net_dns_servers
+  changed_when: false
+
+- name: Detect DNS search domains from resolv.conf
+  ansible.builtin.shell: "awk '/^(search|domain) /{for (i=2;i<=NF;i++) printf $i\" \"}' /etc/resolv.conf"
+  args:
+    executable: /bin/bash
+  register: net_dns_domains
+  changed_when: false
+
+- name: Assert primary interface has IPv4 CIDR
+  ansible.builtin.assert:
+    that:
+      - net_primary_ipv4_cidr.stdout is defined
+      - net_primary_ipv4_cidr.stdout | trim | length > 0
+    fail_msg: >
+      No IPv4 address detected on {{ net_primary_iface }}.
+      Refusing to stage systemd-networkd config without an address.
+
+# --------------------------------
+# Stage systemd-networkd config
+# --------------------------------
+
+- name: Ensure /etc/systemd/network exists
+  ansible.builtin.file:
+    path: /etc/systemd/network
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Stage primary interface networkd unit
+  ansible.builtin.template:
+    src: primary.network.j2
+    dest: "/etc/systemd/network/10-{{ net_primary_iface }}.network"
+    owner: root
+    group: root
+    mode: "0644"
+  register: networkd_template_result
+
+- name: Set networkd config change fact
+  ansible.builtin.set_fact:
+    networkd_config_changed: "{{ networkd_template_result.changed | default(false) }}"
+
+- name: Generate timestamp for systemd-networkd backup
+  ansible.builtin.command: date +%Y%m%d%H%M%S
+  register: networkd_backup_ts
+  changed_when: false
+  when: networkd_config_changed
+
+- name: Backup /etc/systemd/network
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tar -C /etc/systemd -cf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar network
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: networkd_config_changed
+
+- name: Display staged networkd unit path
+  ansible.builtin.debug:
+    msg:
+      - "Staged: /etc/systemd/network/10-{{ net_primary_iface }}.network"
+      - "NOTE: systemd-networkd not restarted yet."
+
+# If systemd-networkd is not active, prefer a minimal DHCP config on the
+# current primary NIC before attempting to start/enable it.
+- name: Risky apply phase
+  when:
+    - not networkd_already_controlling
+    - networkd_config_changed or net_tools.systemd_networkd_active != "active"
+  tags:
+    - risky
+  block:
+  - name: Arm minimal DHCP config when systemd-networkd is inactive
+    ansible.builtin.set_fact:
+      _networkd_prepare_dhcp: true
+    when:
+      - net_tools.systemd_networkd_active != "active"
+    changed_when: true
+    notify: Stage minimal DHCP networkd unit for primary NIC
+    tags:
+      - risky
+
+  - name: Flush handlers before applying systemd-networkd
+    ansible.builtin.meta: flush_handlers
+    tags:
+      - risky
+
+  # --------------------------------
+  # Rollback safeguard (dead-man switch)
+  # --------------------------------
+
+  - name: Check for previously scheduled rollback job id
+    ansible.builtin.stat:
+      path: /var/run/networkd-rollback.job
+    register: networkd_rollback_job_file
+    tags:
+      - risky
+
+  - name: Read previously scheduled rollback job id
+    ansible.builtin.command: cat /var/run/networkd-rollback.job
+    register: prior_networkd_rollback_job_id
+    changed_when: false
+    failed_when: false
+    when: networkd_rollback_job_file.stat.exists
+    tags:
+      - risky
+
+  - name: Clear previously scheduled rollback job
+    ansible.builtin.command: "atrm {{ prior_networkd_rollback_job_id.stdout | trim }}"
+    register: prior_atrm_result
+    changed_when: true
+    failed_when: false
+    when:
+      - networkd_rollback_job_file.stat.exists
+      - prior_networkd_rollback_job_id.stdout is defined
+      - prior_networkd_rollback_job_id.stdout | trim | length > 0
+    tags:
+      - risky
+
+  - name: Ensure at is installed for rollback scheduling
+    ansible.builtin.package:
+      name: at
+      state: present
+
+  - name: Ensure atd service is enabled and running
+    ansible.builtin.systemd:
+      name: atd
+      enabled: true
+      state: started
+
+  - name: Build rollback command for systemd-networkd
+    ansible.builtin.set_fact:
+      networkd_rollback_cmd: >-
+        systemctl stop systemd-networkd &&
+        rm -rf /etc/systemd/network &&
+        mkdir -p /etc/systemd/network &&
+        tar -C /etc/systemd -xf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar &&
+        systemctl start systemd-networkd
+
+  - name: Schedule rollback in 5 minutes using at
+    ansible.builtin.shell: |
+      set -euo pipefail
+      echo "{{ networkd_rollback_cmd }}" | at -M now + 5 minutes
+    args:
+      executable: /bin/bash
+    register: at_schedule
+    changed_when: true
+    tags:
+      - risky
+
+  - name: Extract at job id
+    ansible.builtin.set_fact:
+      networkd_rollback_job_id: "{{ (at_schedule.stdout ~ at_schedule.stderr) | regex_search('job\\s+(\\d+)', '\\1') }}"
+    vars:
+      _unused: ""
+    tags:
+      - risky
+
+  - name: Assert rollback job id was captured
+    ansible.builtin.assert:
+      that:
+        - networkd_rollback_job_id is defined
+        - networkd_rollback_job_id | length > 0
+      fail_msg: >
+        Rollback job was scheduled, but the job id could not be parsed from output:
+        {{ at_schedule.stdout }} {{ at_schedule.stderr }}
+        Refusing to proceed.
+      success_msg: >
+        Rollback armed (at job {{ networkd_rollback_job_id }}) for +5 minutes.
+    tags:
+      - risky
+
+  - name: Record rollback job id for future cleanup
+    ansible.builtin.copy:
+      dest: /var/run/networkd-rollback.job
+      owner: root
+      group: root
+      mode: "0644"
+      content: "{{ networkd_rollback_job_id | regex_replace('\\D', '') }}\n"
+    tags:
+      - risky
+
+  # --------------------------------
+  # Apply systemd-networkd (risky)
+  # --------------------------------
+
+  - name: Enable and restart systemd-networkd
+    ansible.builtin.systemd:
+      name: systemd-networkd
+      enabled: true
+      state: restarted
+    tags:
+      - risky
+
+  - name: Wait briefly for networkd to settle
+    ansible.builtin.pause:
+      seconds: 10
+    tags:
+      - risky
+
+  # --------------------------------
+  # Verify new state locally
+  # --------------------------------
+
+  - name: Verify systemd-networkd is active
+    ansible.builtin.systemd:
+      name: systemd-networkd
+    register: networkd_service
+    failed_when: false
+    changed_when: false
+    tags:
+      - risky
+
+  - name: Check primary interface exists
+    ansible.builtin.command: "ip link show {{ net_primary_iface }}"
+    register: primary_link
+    changed_when: false
+    tags:
+      - risky
+
+  - name: Check IPv4 address on primary interface
+    ansible.builtin.shell: "ip -4 -o addr show dev {{ net_primary_iface }} scope global | awk '{print $4}'"
+    args:
+      executable: /bin/bash
+    register: primary_ipv4
+    changed_when: false
+    tags:
+      - risky
+
+  - name: Check default route uses primary interface
+    ansible.builtin.shell: "ip route show default | awk '{print $5}'"
+    args:
+      executable: /bin/bash
+    register: default_route_iface
+    changed_when: false
+    tags:
+      - risky
+
+  - name: Assert networkd is active and default route is intact
+    ansible.builtin.assert:
+      that:
+        - networkd_service.status.ActiveState is defined
+        - networkd_service.status.ActiveState == "active"
+        - (primary_ipv4.stdout | trim) != ""
+        - (default_route_iface.stdout | trim) == net_primary_iface
+      fail_msg: >
+        Post-apply verification failed.
+        systemd-networkd ActiveState: {{ networkd_service.status.ActiveState | default('unknown') }}
+        Primary IPv4: '{{ primary_ipv4.stdout | trim }}'
+        Default route iface: '{{ default_route_iface.stdout | trim }}'
+        Leaving rollback armed (job {{ networkd_rollback_job_id }}).
+      success_msg: >
+        Post-apply verification passed. Primary IPv4 '{{ primary_ipv4.stdout | trim }}'
+        and default route via {{ net_primary_iface }}.
+    tags:
+      - risky
+
+  - name: Wait for Ansible SSH connectivity to remain healthy
+    ansible.builtin.wait_for_connection:
+      timeout: 60
+    tags:
+      - risky
+
+  # --------------------------------
+  # Disarm rollback only after success
+  # --------------------------------
+
+  - name: Cancel rollback job (atrm)
+    ansible.builtin.command: "atrm {{ networkd_rollback_job_id | regex_replace('\\D', '') }}"
+    register: atrm_result
+    changed_when: true
+    failed_when: false
+    tags:
+      - risky
+
+  - name: Remove rollback job id record
+    ansible.builtin.file:
+      path: /var/run/networkd-rollback.job
+      state: absent
+    tags:
+      - risky
+
+  - name: Phase completed successfully
+    ansible.builtin.debug:
+      msg:
+        - "systemd-networkd change committed."
+        - "Rollback job {{ networkd_rollback_job_id | default('n/a') }} canceled."
+        - "Primary interface {{ net_primary_iface }} is up with IPv4 {{ primary_ipv4.stdout | trim }}."
+    when:
+      - networkd_rollback_job_id is defined
+    tags:
+      - risky
