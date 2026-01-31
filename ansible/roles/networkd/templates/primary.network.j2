@@ -1,0 +1,19 @@
+# This file is managed by Ansible.
+# It mirrors the current primary interface topology to avoid connectivity loss.
+
+[Match]
+Name={{ net_primary_iface }}
+
+[Network]
+{% if net_primary_ipv4_dynamic.stdout | trim == "true" %}
+DHCP=yes
+{% else %}
+Address={{ net_primary_ipv4_cidr.stdout | trim }}
+Gateway={{ net_primary_gateway }}
+{% if net_dns_servers.stdout is defined and (net_dns_servers.stdout | trim) != "" %}
+DNS={{ net_dns_servers.stdout | trim }}
+{% endif %}
+{% if (net_primary_ipv4_dynamic.stdout | trim) != "true" and net_dns_domains.stdout is defined and (net_dns_domains.stdout | trim) != "" %}
+Domains={{ net_dns_domains.stdout | trim }}
+{% endif %}
+{% endif %}
