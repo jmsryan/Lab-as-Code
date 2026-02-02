@@ -8,3 +8,4 @@
     - baseline
     - security
     - networkd
+    - hypervisor-networking

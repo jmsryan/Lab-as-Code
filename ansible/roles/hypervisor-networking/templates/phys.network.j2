@@ -1,0 +1,17 @@
+# Managed by Ansible
+
+[Match]
+Name={{ net_phys_iface }}
+
+[Network]
+Bridge={{ net_bridge_name }}
+
+{% for vid in net_allowed_vlans_sorted %}
+[BridgeVLAN]
+{% if vid == net_server_vlan %}
+PVID={{ vid }}
+EgressUntagged={{ vid }}
+{% else %}
+VLAN={{ vid }}
+{% endif %}
+{% endfor %}
