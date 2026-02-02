@@ -1,0 +1,176 @@
+---
+- name: Assert required hypervisor networking variables are defined
+  ansible.builtin.assert:
+    that:
+      - net_phys_iface is defined
+      - net_bridge_name is defined
+      - net_server_vlan is defined
+      - net_allowed_vlans is defined
+    fail_msg: >
+      Missing required variables. Define in host vars:
+      net_phys_iface, net_bridge_name, net_server_vlan, net_allowed_vlans
+
+- name: Normalize allowed VLAN list and ensure server VLAN is included
+  ansible.builtin.set_fact:
+    net_allowed_vlans_normalized: >-
+      {{ (net_allowed_vlans + [net_server_vlan]) | map('int') | list | unique }}
+
+- name: Sort allowed VLANs
+  ansible.builtin.set_fact:
+    net_allowed_vlans_sorted: "{{ net_allowed_vlans_normalized | sort }}"
+
+- name: Ensure /etc/systemd/network exists
+  ansible.builtin.file:
+    path: /etc/systemd/network
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Generate timestamp for networkd config backup
+  ansible.builtin.command: date +%Y%m%d%H%M%S
+  register: hypervisor_networkd_backup_ts
+  changed_when: false
+
+- name: Define networkd config paths
+  ansible.builtin.set_fact:
+    networkd_paths:
+      bridge_netdev: "/etc/systemd/network/10-{{ net_bridge_name }}.netdev"
+      bridge_network: "/etc/systemd/network/20-{{ net_bridge_name }}.network"
+      vlan_netdev: "/etc/systemd/network/21-{{ net_bridge_name }}.{{ net_server_vlan }}.netdev"
+      vlan_network: "/etc/systemd/network/22-{{ net_bridge_name }}.{{ net_server_vlan }}.network"
+      phys_network: "/etc/systemd/network/30-{{ net_phys_iface }}.network"
+
+- name: Define approved networkd config files
+  ansible.builtin.set_fact:
+    networkd_approved_files:
+      - "{{ networkd_paths.bridge_netdev }}"
+      - "{{ networkd_paths.vlan_netdev }}"
+      - "{{ networkd_paths.bridge_network }}"
+      - "{{ networkd_paths.vlan_network }}"
+      - "{{ networkd_paths.phys_network }}"
+
+- name: Find existing networkd config files
+  ansible.builtin.find:
+    paths: /etc/systemd/network
+    patterns:
+      - "*.network"
+      - "*.netdev"
+      - "*.link"
+    file_type: file
+  register: networkd_existing_files
+  when:
+    - hypervisor_networking_cleanup | bool
+
+- name: List non-approved networkd config files
+  ansible.builtin.set_fact:
+    networkd_unapproved_files: >-
+      {{ networkd_existing_files.files
+         | rejectattr('path', 'in', networkd_approved_files)
+         | list }}
+  when:
+    - hypervisor_networking_cleanup | bool
+
+- name: Generate timestamp for networkd config backup
+  ansible.builtin.command: date +%Y%m%d%H%M%S
+  register: hypervisor_networkd_backup_ts
+  changed_when: false
+  when:
+    - hypervisor_networking_cleanup | bool
+    - networkd_unapproved_files | length > 0
+
+- name: Backup /etc/systemd/network before cleanup
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tar -C /etc/systemd -cf /etc/systemd/network.backup.hypervisor.{{ hypervisor_networkd_backup_ts.stdout }}.tar network
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when:
+    - hypervisor_networking_cleanup | bool
+    - networkd_unapproved_files | length > 0
+
+- name: Remove non-approved networkd config files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ networkd_unapproved_files }}"
+  when:
+    - hypervisor_networking_cleanup | bool
+
+- name: Stage bridge netdev
+  ansible.builtin.template:
+    src: bridge.netdev.j2
+    dest: "{{ networkd_paths.bridge_netdev }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: bridge_netdev_result
+  notify: Apply networkd changes now
+
+- name: Stage bridge network
+  ansible.builtin.template:
+    src: bridge.network.j2
+    dest: "{{ networkd_paths.bridge_network }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: bridge_network_result
+  notify: Apply networkd changes now
+
+- name: Stage server VLAN netdev
+  ansible.builtin.template:
+    src: vlan.netdev.j2
+    dest: "{{ networkd_paths.vlan_netdev }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: vlan_netdev_result
+  notify: Apply networkd changes now
+
+- name: Stage server VLAN network (DHCP on VLAN subif)
+  ansible.builtin.template:
+    src: vlan.network.j2
+    dest: "{{ networkd_paths.vlan_network }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: vlan_network_result
+  notify: Apply networkd changes now
+
+- name: Stage physical NIC network (enslave to bridge)
+  ansible.builtin.template:
+    src: phys.network.j2
+    dest: "{{ networkd_paths.phys_network }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: phys_network_result
+  notify: Apply networkd changes now
+
+- name: Set hypervisor networking change fact
+  ansible.builtin.set_fact:
+    hypervisor_networking_changed: >-
+      {{ bridge_netdev_result.changed
+         or bridge_network_result.changed
+         or vlan_netdev_result.changed
+         or vlan_network_result.changed
+         or phys_network_result.changed }}
+
+- name: Display staged networkd paths
+  ansible.builtin.debug:
+    msg:
+      - "Staged: {{ networkd_paths.bridge_netdev }}"
+      - "Staged: {{ networkd_paths.bridge_network }}"
+      - "Staged: {{ networkd_paths.vlan_netdev }}"
+      - "Staged: {{ networkd_paths.vlan_network }}"
+      - "Staged: {{ networkd_paths.phys_network }}"
+      - "Apply is {{ 'enabled' if (hypervisor_networking_apply | bool) else 'disabled' }}."
+
+- name: Flush networkd handlers now
+  ansible.builtin.meta: flush_handlers
+  when:
+    - hypervisor_networking_apply | bool
+    - hypervisor_networking_changed | bool
+  tags:
+    - risky

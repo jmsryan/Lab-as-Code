@@ -7,3 +7,5 @@
     - identity
     - baseline
     - security
+    - networkd
+    - hypervisor-networking

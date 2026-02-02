@@ -1,0 +1,32 @@
+---
+- name: Restart systemd-networkd (hypervisor)
+  ansible.builtin.systemd:
+    name: systemd-networkd
+    enabled: true
+    state: restarted
+  async: 45
+  poll: 0
+  when:
+    - hypervisor_networking_apply | bool
+  tags:
+    - risky
+  listen: Apply networkd changes now
+
+- name: Notify re-run required after network change
+  ansible.builtin.debug:
+    msg: >-
+      Networking changed on {{ inventory_hostname }}. Re-run the playbook at
+      the host's new address once systemd-networkd finishes restarting.
+  when:
+    - hypervisor_networking_apply | bool
+  tags:
+    - risky
+  listen: Apply networkd changes now
+
+- name: End play after applying networking (IP may change)
+  ansible.builtin.meta: end_play
+  when:
+    - hypervisor_networking_apply | bool
+  tags:
+    - risky
+  listen: Apply networkd changes now

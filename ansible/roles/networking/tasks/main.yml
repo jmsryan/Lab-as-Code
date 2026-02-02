@@ -1,0 +1,358 @@
+---
+# Phase 0: Observation & invariants
+# This phase makes NO changes to networking.
+# It exists solely to confirm assumptions before any risky operations.
+
+- name: Gather minimal facts required for networking decisions
+  ansible.builtin.setup:
+    gather_subset:
+      - network
+      - hardware
+      - virtual
+
+# -----------------------------
+# Identify management interface
+# -----------------------------
+
+- name: Assert default IPv4 interface is known
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4 is defined
+      - ansible_default_ipv4.interface is defined
+      - ansible_default_ipv4.address is defined
+      - ansible_default_ipv4.gateway is defined
+    fail_msg: >
+      Unable to determine default IPv4 interface.
+      Refusing to proceed with networking role.
+    success_msg: >
+      Default IPv4 interface identified as {{ ansible_default_ipv4.interface }}.
+
+- name: Display management interface context
+  ansible.builtin.debug:
+    msg:
+      - "Management interface: {{ ansible_default_ipv4.interface }}"
+      - "Management IP: {{ ansible_default_ipv4.address }}"
+      - "Default gateway: {{ ansible_default_ipv4.gateway }}"
+
+- name: Assert management interface matches declared physical interface
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4.interface == net_phys_iface
+    fail_msg: >
+      Default route is via {{ ansible_default_ipv4.interface }},
+      but net_phys_iface is set to {{ net_phys_iface }}.
+      Refusing to modify networking due to interface mismatch.
+    success_msg: >
+      Management interface matches declared physical interface ({{ net_phys_iface }}).
+
+# --------------------------------
+# Verify networking backend control
+# --------------------------------
+
+- name: Check for /etc/network/interfaces
+  ansible.builtin.stat:
+    path: /etc/network/interfaces
+  register: interfaces_file
+
+- name: Assert ifupdown-style networking is in use
+  ansible.builtin.assert:
+    that:
+      - interfaces_file.stat.exists
+    fail_msg: >
+      /etc/network/interfaces does not exist.
+      This role assumes ifupdown/ifupdown2 is authoritative.
+      Refusing to proceed.
+    success_msg: >
+      /etc/network/interfaces exists and will be treated as authoritative.
+
+# --------------------------------
+# Ensure NetworkManager is not active
+# --------------------------------
+
+- name: Check NetworkManager service state
+  ansible.builtin.systemd:
+    name: NetworkManager
+  register: nm_service
+  failed_when: false
+  changed_when: false
+
+- name: Assert NetworkManager is not running
+  ansible.builtin.assert:
+    that:
+      - nm_service.status.ActiveState is not defined
+        or nm_service.status.ActiveState != "active"
+    fail_msg: >
+      NetworkManager is running.
+      This role requires exclusive control via ifupdown/ifupdown2.
+      Disable NetworkManager before proceeding.
+    success_msg: >
+      NetworkManager is not active.
+
+# --------------------------------
+# Record current network state (for operator visibility)
+# --------------------------------
+
+- name: Capture current IP addressing
+  ansible.builtin.command: ip addr show
+  register: ip_addr_output
+  changed_when: false
+
+- name: Capture current routing table
+  ansible.builtin.command: ip route show
+  register: ip_route_output
+  changed_when: false
+
+- name: Display current network state
+  ansible.builtin.debug:
+    msg:
+      - "=== ip addr ==="
+      - "{{ ip_addr_output.stdout_lines }}"
+      - "=== ip route ==="
+      - "{{ ip_route_output.stdout_lines }}"
+
+# --------------------------------
+# Phase boundary marker
+# --------------------------------
+
+- name: Phase 0 completed successfully
+  ansible.builtin.debug:
+    msg: >
+      Networking Phase 0 complete.
+      All invariants satisfied.
+      Safe to proceed to tooling and rollback preparation.
+
+# ============================================================
+# Phase 1: Tooling + rollback primitives
+# ============================================================
+
+- name: Install networking tooling required for safe changes
+  ansible.builtin.package:
+    name:
+      - ifupdown2
+      - at
+    state: present
+
+- name: Ensure atd service is enabled and running
+  ansible.builtin.systemd:
+    name: atd
+    enabled: true
+    state: started
+
+# --------------------------------
+# Backup existing network config
+# --------------------------------
+
+- name: Generate timestamp for network config backup
+  ansible.builtin.command: date +%Y%m%d%H%M%S
+  register: net_backup_ts
+  changed_when: false
+
+- name: Backup /etc/network/interfaces
+  ansible.builtin.copy:
+    src: /etc/network/interfaces
+    dest: "/etc/network/interfaces.backup.{{ net_backup_ts.stdout }}"
+    owner: root
+    group: root
+    mode: "0644"
+    remote_src: true
+
+- name: Confirm backup location
+  ansible.builtin.debug:
+    msg: >
+      Network configuration backed up to
+      /etc/network/interfaces.backup.{{ net_backup_ts.stdout }}
+
+# --------------------------------
+# Phase boundary marker
+# --------------------------------
+
+- name: Phase 1 completed successfully
+  ansible.builtin.debug:
+    msg: >
+      Networking Phase 1 complete.
+      Tooling installed and rollback prerequisites satisfied.
+      Safe to proceed to configuration staging.
+# ============================================================
+# Phase 2: Stage bridge configuration (no apply)
+# ============================================================
+
+- name: Assert required networking variables are defined
+  ansible.builtin.assert:
+    that:
+      - net_phys_iface is defined
+      - net_bridge_name is defined
+      - net_mgmt_vlan is defined
+      - net_allowed_vlans is defined
+    fail_msg: >
+      Missing required networking variables. Define these in private inventory/host_vars:
+      net_phys_iface, net_bridge_name, net_mgmt_vlan, net_allowed_vlans
+
+- name: Ensure /etc/network/interfaces.d exists
+  ansible.builtin.file:
+    path: /etc/network/interfaces.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure /etc/network/interfaces sources /etc/network/interfaces.d/*
+  ansible.builtin.lineinfile:
+    path: /etc/network/interfaces
+    line: "source /etc/network/interfaces.d/*"
+    insertafter: EOF
+    state: present
+  register: interfaces_source_line
+
+- name: Stage bridge configuration into interfaces.d
+  ansible.builtin.template:
+    src: bridge.cfg.j2
+    dest: "/etc/network/interfaces.d/bridge-{{ net_bridge_name }}.cfg"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Display staged file path (no apply performed)
+  ansible.builtin.debug:
+    msg:
+      - "Staged: /etc/network/interfaces.d/bridge-{{ net_bridge_name }}.cfg"
+      - "NOTE: Networking has NOT been reloaded or changed."
+
+- name: Phase 2 completed successfully
+  ansible.builtin.debug:
+    msg: >
+      Networking Phase 2 complete.
+      Configuration staged only (no apply).
+      Next phase will apply with rollback guard.
+
+# ============================================================
+# Phase 3: Apply with rollback guard (5 minutes)
+# ============================================================
+
+- name: Determine latest /etc/network/interfaces backup for rollback
+  ansible.builtin.shell: "ls -1t /etc/network/interfaces.backup.* 2>/dev/null | head -n 1"
+  args:
+    executable: /bin/bash
+  register: latest_interfaces_backup
+  changed_when: false
+
+- name: Assert a backup exists before applying networking changes
+  ansible.builtin.assert:
+    that:
+      - latest_interfaces_backup.stdout is defined
+      - latest_interfaces_backup.stdout | length > 0
+    fail_msg: >
+      No /etc/network/interfaces.backup.* file found. Refusing to apply networking changes
+      without a known-good rollback file.
+    success_msg: >
+      Using rollback source: {{ latest_interfaces_backup.stdout }}
+
+- name: Build rollback command (restore backup, remove staged bridge file, reload)
+  ansible.builtin.set_fact:
+    rollback_cmd: >-
+      cp -f {{ latest_interfaces_backup.stdout }} /etc/network/interfaces &&
+      rm -f /etc/network/interfaces.d/bridge-{{ net_bridge_name }}.cfg &&
+      ifreload -a
+
+- name: Schedule rollback in 5 minutes using at (dead-man switch)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    echo "{{ rollback_cmd }}" | at -M now + 5 minutes
+  args:
+    executable: /bin/bash
+  register: at_schedule
+  changed_when: true
+
+- name: Extract at job id
+  ansible.builtin.set_fact:
+    rollback_job_id: "{{ (at_schedule.stdout ~ at_schedule.stderr) | regex_search('job\\s+(\\d+)', '\\1') | first }}"
+  vars:
+    # concatenate stdout/stderr because 'at' output varies
+    _unused: ""
+
+- name: Assert rollback job id was captured
+  ansible.builtin.assert:
+    that:
+      - rollback_job_id is defined
+      - rollback_job_id | length > 0
+    fail_msg: >
+      Rollback job was scheduled, but the job id could not be parsed from output:
+      {{ at_schedule.stdout }} {{ at_schedule.stderr }}
+      Refusing to proceed.
+    success_msg: >
+      Rollback armed (at job {{ rollback_job_id }}) for +5 minutes.
+
+# -----------------------------
+# Apply networking (risky step)
+# -----------------------------
+
+- name: Apply staged networking configuration (ifreload -a)
+  ansible.builtin.command: /usr/sbin/ifreload -a
+  register: ifreload_result
+  changed_when: true
+
+# Give DHCP a moment; don’t cancel rollback yet
+- name: Wait briefly for DHCP to settle on the bridge
+  ansible.builtin.pause:
+    seconds: 10
+
+# -----------------------------
+# Verify the new state locally
+# (These checks run on the host, not from the controller side.)
+# -----------------------------
+
+- name: Check bridge exists
+  ansible.builtin.command: "ip link show {{ net_bridge_name }}"
+  register: bridge_link
+  changed_when: false
+
+- name: Check IPv4 address on bridge (DHCP)
+  ansible.builtin.shell: "ip -4 -o addr show dev {{ net_bridge_name }} | awk '{print $4}'"
+  args:
+    executable: /bin/bash
+  register: bridge_ipv4
+  changed_when: false
+
+- name: Check default route uses the bridge
+  ansible.builtin.shell: "ip route show default | awk '{print $5}'"
+  args:
+    executable: /bin/bash
+  register: default_route_iface
+  changed_when: false
+
+- name: Assert bridge has DHCP IPv4 and is default route interface
+  ansible.builtin.assert:
+    that:
+      - (bridge_ipv4.stdout | trim) != ""
+      - (default_route_iface.stdout | trim) == net_bridge_name
+    fail_msg: >
+      Post-apply verification failed.
+      Bridge IPv4: '{{ bridge_ipv4.stdout | trim }}'
+      Default route iface: '{{ default_route_iface.stdout | trim }}'
+      Leaving rollback armed (job {{ rollback_job_id }}). SSH should recover automatically.
+    success_msg: >
+      Post-apply verification passed. Bridge has IPv4 '{{ bridge_ipv4.stdout | trim }}'
+      and default route is via {{ net_bridge_name }}.
+
+# -----------------------------
+# Confirm controller can still reach the host (SSH continuity)
+# -----------------------------
+
+- name: Wait for Ansible SSH connectivity to remain healthy
+  ansible.builtin.wait_for_connection:
+    timeout: 60
+
+# -----------------------------
+# Disarm rollback only after success
+# -----------------------------
+
+- name: Cancel rollback job (atrm)
+  ansible.builtin.command: "atrm {{ rollback_job_id }}"
+  register: atrm_result
+  changed_when: true
+
+- name: Phase 3 completed successfully
+  ansible.builtin.debug:
+    msg:
+      - "Networking Phase 3 complete."
+      - "Rollback job {{ rollback_job_id }} canceled."
+      - "Bridge {{ net_bridge_name }} is up with DHCP ({{ bridge_ipv4.stdout | trim }})."

@@ -1,0 +1,21 @@
+# Managed by Ansible (networking role)
+# Staged file. Applying requires an explicit reload step (Phase 3).
+
+auto lo
+iface lo inet loopback
+
+# Physical NIC: no IP here; it is enslaved into the bridge.
+auto {{ net_phys_iface }}
+iface {{ net_phys_iface }} inet manual
+
+# Primary bridge: host IP via DHCP on infrastructure VLAN (PVID)
+auto {{ net_bridge_name }}
+iface {{ net_bridge_name }} inet dhcp
+  bridge-ports {{ net_phys_iface }}
+  bridge-stp off
+  bridge-fd 0
+
+  # VLAN-aware bridge settings (ifupdown2)
+  bridge-vlan-aware yes
+  bridge-pvid {{ net_mgmt_vlan }}
+  bridge-vids {{ net_allowed_vlans | join(' ') }}

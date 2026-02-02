@@ -1,0 +1,12 @@
+# Managed by Ansible
+
+[Match]
+Name={{ net_bridge_name }}
+
+[Network]
+VLAN={{ net_bridge_name }}.{{ net_server_vlan }}
+
+{% for vid in net_allowed_vlans_sorted %}
+[BridgeVLAN]
+VLAN={{ vid }}
+{% endfor %}
