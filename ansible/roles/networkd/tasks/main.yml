@@ -283,6 +283,9 @@
     register: networkd_rollback_job_file
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   - name: Read previously scheduled rollback job id
     ansible.builtin.command: cat /var/run/networkd-rollback.job
@@ -292,6 +295,9 @@
     when: networkd_rollback_job_file.stat.exists
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   - name: Clear previously scheduled rollback job
     ansible.builtin.command: "atrm {{ prior_networkd_rollback_job_id.stdout | trim }}"
@@ -304,17 +310,30 @@
       - prior_networkd_rollback_job_id.stdout | trim | length > 0
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   - name: Ensure at is installed for rollback scheduling
     ansible.builtin.package:
       name: at
       state: present
+    tags:
+      - risky
+      - rollback
+      - dev
+      - never
 
   - name: Ensure atd service is enabled and running
     ansible.builtin.systemd:
       name: atd
       enabled: true
       state: started
+    tags:
+      - risky
+      - rollback
+      - dev
+      - never
 
   - name: Build rollback command for systemd-networkd
     ansible.builtin.set_fact:
@@ -324,6 +343,11 @@
         mkdir -p /etc/systemd/network &&
         tar -C /etc/systemd -xf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar &&
         systemctl start systemd-networkd
+    tags:
+      - risky
+      - rollback
+      - dev
+      - never
 
   - name: Schedule rollback in 5 minutes using at
     ansible.builtin.shell: |
@@ -335,6 +359,9 @@
     changed_when: true
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   - name: Extract at job id
     ansible.builtin.set_fact:
@@ -343,6 +370,9 @@
       _unused: ""
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   - name: Assert rollback job id was captured
     ansible.builtin.assert:
@@ -357,6 +387,9 @@
         Rollback armed (at job {{ networkd_rollback_job_id }}) for +5 minutes.
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   - name: Record rollback job id for future cleanup
     ansible.builtin.copy:
@@ -367,6 +400,9 @@
       content: "{{ networkd_rollback_job_id | regex_replace('\\D', '') }}\n"
     tags:
       - risky
+      - rollback
+      - dev
+      - never
 
   # --------------------------------
   # Apply systemd-networkd (risky)
