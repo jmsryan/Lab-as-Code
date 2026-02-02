@@ -1,0 +1,15 @@
+---
+# Bridge name for the hypervisor host
+net_bridge_name: br0
+
+# Physical NIC to enslave (must be set in host vars)
+# net_phys_iface: eno1
+
+# Untagged/PVID VLAN for the host itself (DHCP on bridge)
+# net_server_vlan: 20
+
+# Allowed VLANs on the bridge trunk (list of ints)
+# net_allowed_vlans: [20, 30, 40]
+
+# Whether to apply/restart systemd-networkd after staging
+hypervisor_networking_apply: false

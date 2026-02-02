@@ -49,8 +49,11 @@
     that:
       - ifupdown_service.status.ActiveState is not defined
         or ifupdown_service.status.ActiveState != "active"
+        or ifupdown_service.status.SubState == "exited"
     fail_msg: >
       ifupdown networking service is active.
+      ActiveState={{ ifupdown_service.status.ActiveState | default('unknown') }},
+      SubState={{ ifupdown_service.status.SubState | default('unknown') }}.
       Refusing to proceed with systemd-networkd takeover.
     success_msg: >
       ifupdown networking service is not active.
