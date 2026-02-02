@@ -31,18 +31,6 @@
   ansible.builtin.command: date +%Y%m%d%H%M%S
   register: hypervisor_networkd_backup_ts
   changed_when: false
-  when:
-    - hypervisor_networking_cleanup | bool
-
-- name: Backup /etc/systemd/network before cleanup
-  ansible.builtin.shell: |
-    set -euo pipefail
-    tar -C /etc/systemd -cf /etc/systemd/network.backup.hypervisor.{{ hypervisor_networkd_backup_ts.stdout }}.tar network
-  args:
-    executable: /bin/bash
-  changed_when: true
-  when:
-    - hypervisor_networking_cleanup | bool
 
 - name: Define networkd config paths
   ansible.builtin.set_fact:
@@ -74,14 +62,41 @@
   when:
     - hypervisor_networking_cleanup | bool
 
+- name: List non-approved networkd config files
+  ansible.builtin.set_fact:
+    networkd_unapproved_files: >-
+      {{ networkd_existing_files.files
+         | rejectattr('path', 'in', networkd_approved_files)
+         | list }}
+  when:
+    - hypervisor_networking_cleanup | bool
+
+- name: Generate timestamp for networkd config backup
+  ansible.builtin.command: date +%Y%m%d%H%M%S
+  register: hypervisor_networkd_backup_ts
+  changed_when: false
+  when:
+    - hypervisor_networking_cleanup | bool
+    - networkd_unapproved_files | length > 0
+
+- name: Backup /etc/systemd/network before cleanup
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tar -C /etc/systemd -cf /etc/systemd/network.backup.hypervisor.{{ hypervisor_networkd_backup_ts.stdout }}.tar network
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when:
+    - hypervisor_networking_cleanup | bool
+    - networkd_unapproved_files | length > 0
+
 - name: Remove non-approved networkd config files
   ansible.builtin.file:
     path: "{{ item.path }}"
     state: absent
-  loop: "{{ networkd_existing_files.files }}"
+  loop: "{{ networkd_unapproved_files }}"
   when:
     - hypervisor_networking_cleanup | bool
-    - item.path not in networkd_approved_files
 
 - name: Stage bridge netdev
   ansible.builtin.template:
