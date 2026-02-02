@@ -13,3 +13,6 @@ net_bridge_name: br0
 
 # Whether to apply/restart systemd-networkd after staging
 hypervisor_networking_apply: false
+
+# Whether to backup/cleanup existing networkd configs before staging
+hypervisor_networking_cleanup: true
