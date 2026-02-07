@@ -187,6 +187,7 @@ Terraform **does not**:
 - Long-lived configuration must not leak into cloud-init
 - VM lifecycle logic must not leak into Ansible
 - Public repositories must not contain operational identity values
+- Operational identity values must live only in **private inventory**
 
 Boundary violations are considered **design defects**, not implementation details.
 

@@ -1,0 +1,10 @@
+all:
+  hosts:
+    hypervisor:
+      ansible_host: "<HOST_IP>"
+      system_hostname: "<HOSTNAME>"
+      system_timezone: "<TIMEZONE>"
+      net_phys_iface: "<NIC_NAME>"
+      net_bridge_name: "br0"
+      net_server_vlan: <VLAN_ID>
+      net_allowed_vlans: [<VLAN_ID>, <VLAN_ID>, <VLAN_ID>]

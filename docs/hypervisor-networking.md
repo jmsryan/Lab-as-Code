@@ -215,6 +215,21 @@ No single tool crosses layers or assumes hidden responsibilities.
 
 ---
 
+## Implementation & Deployment Notes
+
+This document is intentionally qualitative. For **deployment details**, see:
+
+- `docs/hypervisor-networking-deploy.md`
+
+Key implementation constraints:
+
+- Networking is implemented with **systemd-networkd** (not NetworkManager).
+- The server VLAN interface is configured for **DHCP** by default.
+- The Ansible role stages configs by default and requires an explicit apply flag.
+- The role may remove non-approved networkd configs during cleanup.
+
+---
+
 ## Summary
 
 The hypervisor networking architecture treats the host as a **Layer 2 participant
