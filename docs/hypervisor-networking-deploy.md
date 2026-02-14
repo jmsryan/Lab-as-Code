@@ -28,12 +28,32 @@ This guide assumes the architectural intent described in:
 - One **infrastructure VLAN** provides host connectivity
 - Optional workload VLANs are trunked to the host
 
+> An **access port** (untagged) also works for basic connectivity. The
+> bridge PVID configuration ensures the server VLAN functions correctly
+> with untagged traffic. Additional VLANs will not pass traffic unless
+> the switch port is a trunk.
+
 ### Host OS expectations
 - `systemd-networkd` is installed and available
 - `NetworkManager` and `ifupdown` are **not** actively managing interfaces
 - The host has basic DHCP connectivity on the infrastructure VLAN
 
 > DHCP-only on the server VLAN is an intentional design choice.
+
+### Physical NIC identification
+- The `net_phys_iface` variable must match the host's actual interface name
+- Interface names follow systemd predictable naming and vary by hardware:
+  servers commonly use `eno1`, while workstations use PCI-path names such
+  as `enp0s31f6`
+- Run `ip link show` on the target host to confirm the correct name
+
+### Recovery access
+- Physical console access (keyboard + monitor) or an out-of-band
+  management interface (iDRAC, IPMI, IP-KVM) **must** be available before
+  the apply step
+- Workstation-class hardware typically lacks out-of-band management;
+  ensure a local console is reachable in case the networking apply or
+  rollback fails
 
 ---
 
@@ -81,7 +101,10 @@ Optional behavior flags:
 4) **Reconnect**
 - If the IP changes, re-run against the new address.
 
-> Consider out-of-band access or console access before the apply step.
+> **Ensure console or out-of-band access is available before the apply
+> step.** If the host lacks iDRAC/IPMI (common on workstations), have a
+> keyboard and monitor connected. The role arms a 5-minute rollback
+> dead-man switch, but physical access is the last line of recovery.
 
 ---
 

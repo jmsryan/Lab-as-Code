@@ -4,6 +4,8 @@ all:
       ansible_host: "<HOST_IP>"
       system_hostname: "<HOSTNAME>"
       system_timezone: "<TIMEZONE>"
+      # Physical NIC name — run `ip link show` on the target host.
+      # Servers often use eno1; workstations use PCI-path names like enp0s31f6.
       net_phys_iface: "<NIC_NAME>"
       net_bridge_name: "br0"
       net_server_vlan: <VLAN_ID>

@@ -34,10 +34,47 @@ should be required.
 
 ## Prerequisites
 
-- Physical access to the host
+- Physical access to the host (keyboard and monitor, or remote KVM)
 - A workstation capable of writing USB media
 - Network connectivity providing DHCP on the infrastructure network
 - SSH keypair for the automation user
+
+### BIOS / Firmware Settings
+
+Before installing the operating system, verify the following in the host
+BIOS/UEFI configuration:
+
+- **CPU virtualization extensions (VT-x / AMD-V)** must be enabled.
+  KVM requires hardware virtualization support. Many workstation-class
+  systems ship with this disabled by default.
+- **IOMMU / VT-d** should be enabled if PCI device passthrough to guest
+  VMs is planned.
+- **Suspend, hibernate, and sleep states** should be disabled. The
+  hypervisor is expected to run continuously; ACPI sleep states risk
+  silently taking down all guest workloads.
+
+### Recovery Access
+
+The automation hardening applied by Ansible (root locked, password
+authentication disabled, SSH restricted to a single automation user)
+means that **physical console access or an out-of-band management
+interface** (e.g., iDRAC, IPMI, or IP-KVM) must remain available for
+recovery. If the host has no out-of-band management — as is typical of
+workstation-class hardware — ensure a keyboard and monitor can be
+connected before applying networking or security changes.
+
+### Network Interface Identification
+
+Identify the physical network interface name before proceeding. Interface
+names are assigned by systemd's predictable naming scheme and vary by
+hardware platform:
+
+- Server-class systems often use firmware-embedded names (e.g., `eno1`)
+- Workstation and desktop systems typically use PCI path-based names
+  (e.g., `enp0s31f6`, `enp2s0`)
+
+Run `ip link show` after the OS install to confirm the correct name.
+This value is used as the `net_phys_iface` inventory variable.
 
 ---
 
