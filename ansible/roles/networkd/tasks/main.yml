@@ -339,10 +339,17 @@
     ansible.builtin.set_fact:
       networkd_rollback_cmd: >-
         systemctl stop systemd-networkd &&
+        systemctl disable systemd-networkd ;
         rm -rf /etc/systemd/network &&
         mkdir -p /etc/systemd/network &&
-        tar -C /etc/systemd -xf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar &&
-        systemctl start systemd-networkd
+        tar -C /etc/systemd -xf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar ;
+        if [ -f /etc/network/interfaces.bak.{{ networkd_backup_ts.stdout }} ]; then
+        cp /etc/network/interfaces.bak.{{ networkd_backup_ts.stdout }} /etc/network/interfaces &&
+        systemctl enable networking &&
+        systemctl start networking ;
+        else
+        systemctl start systemd-networkd ;
+        fi
     tags:
       - risky
       - rollback
@@ -403,6 +410,50 @@
       - rollback
       - dev
       - never
+
+  # --------------------------------
+  # Deactivate ifupdown before systemd-networkd takes over
+  # --------------------------------
+
+  - name: Stop and disable ifupdown networking service
+    ansible.builtin.systemd:
+      name: networking
+      enabled: false
+      state: stopped
+    when:
+      - net_tools.networking_unit_present | bool
+    failed_when: false
+    tags:
+      - risky
+
+  - name: Backup /etc/network/interfaces before replacement
+    ansible.builtin.copy:
+      src: /etc/network/interfaces
+      dest: "/etc/network/interfaces.bak.{{ networkd_backup_ts.stdout }}"
+      remote_src: true
+      owner: root
+      group: root
+      mode: "0644"
+    when:
+      - net_tools.networking_unit_present | bool
+    failed_when: false
+    tags:
+      - risky
+
+  - name: Replace /etc/network/interfaces with loopback only
+    ansible.builtin.copy:
+      dest: /etc/network/interfaces
+      owner: root
+      group: root
+      mode: "0644"
+      content: |
+        # Managed by Ansible — networking is handled by systemd-networkd
+        auto lo
+        iface lo inet loopback
+    when:
+      - net_tools.networking_unit_present | bool
+    tags:
+      - risky
 
   # --------------------------------
   # Apply systemd-networkd (risky)
