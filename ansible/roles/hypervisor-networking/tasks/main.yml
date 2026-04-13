@@ -1,4 +1,86 @@
 ---
+# --------------------------------
+# Verify-and-disarm (re-run after apply)
+# --------------------------------
+
+- name: Check if hypervisor networking rollback timer is armed
+  ansible.builtin.shell: systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null || echo inactive
+  args:
+    executable: /bin/bash
+  register: hypervisor_rollback_timer_state
+  changed_when: false
+  failed_when: false
+
+- name: Verify and disarm rollback after successful reconnect
+  when: hypervisor_rollback_timer_state.stdout | trim == "active"
+  tags:
+    - risky
+  block:
+    - name: Verify systemd-networkd is active
+      ansible.builtin.systemd:
+        name: systemd-networkd
+      register: networkd_verify_service
+      changed_when: false
+      failed_when: false
+
+    - name: Verify bridge interface exists
+      ansible.builtin.command: "ip link show {{ net_bridge_name }}"
+      register: networkd_verify_bridge
+      changed_when: false
+      failed_when: false
+
+    - name: Verify VLAN subinterface has an IPv4 address
+      ansible.builtin.shell: "ip -4 -o addr show dev {{ net_bridge_name }}.{{ net_server_vlan }} scope global | awk '{print $4}'"
+      args:
+        executable: /bin/bash
+      register: networkd_verify_vlan_ipv4
+      changed_when: false
+      failed_when: false
+
+    - name: Verify a default route exists
+      ansible.builtin.shell: "ip route show default | head -n 1"
+      args:
+        executable: /bin/bash
+      register: networkd_verify_default_route
+      changed_when: false
+      failed_when: false
+
+    - name: Assert network state is healthy
+      ansible.builtin.assert:
+        that:
+          - networkd_verify_service.status.ActiveState is defined
+          - networkd_verify_service.status.ActiveState == "active"
+          - networkd_verify_bridge.rc == 0
+          - (networkd_verify_vlan_ipv4.stdout | trim) != ""
+          - (networkd_verify_default_route.stdout | trim) != ""
+        fail_msg: >
+          Network state is unhealthy after apply.
+          systemd-networkd: {{ networkd_verify_service.status.ActiveState | default('unknown') }}
+          Bridge {{ net_bridge_name }}: {{ 'present' if networkd_verify_bridge.rc == 0 else 'missing' }}
+          VLAN subif IPv4: '{{ networkd_verify_vlan_ipv4.stdout | trim }}'
+          Default route: '{{ networkd_verify_default_route.stdout | trim }}'
+          The rollback timer is still armed and will fire automatically.
+          Do not re-run until rollback completes and you can reconnect.
+        success_msg: >
+          Network state verified healthy. Disarming rollback timer.
+
+    - name: Disarm hypervisor networking rollback timer
+      ansible.builtin.shell: systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: true
+      failed_when: false
+
+    - name: Previous apply verified healthy
+      ansible.builtin.debug:
+        msg:
+          - "Bridge {{ net_bridge_name }} is up."
+          - "VLAN subif {{ net_bridge_name }}.{{ net_server_vlan }} has IPv4 {{ networkd_verify_vlan_ipv4.stdout | trim }}."
+          - "Rollback timer disarmed."
+
+    - name: End role — state is already correct
+      ansible.builtin.meta: end_role
+
 - name: Assert required hypervisor networking variables are defined
   ansible.builtin.assert:
     that:
@@ -98,6 +180,29 @@
   when:
     - hypervisor_networking_cleanup | bool
 
+- name: Back up current networkd config before staging
+  ansible.builtin.shell: |
+    set -euo pipefail
+    tar -C /etc/systemd -cf /etc/systemd/network.hypervisor-rollback.tar network
+  args:
+    executable: /bin/bash
+  changed_when: true
+
+- name: Stage hypervisor networking rollback script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/networkd-hypervisor-rollback
+    owner: root
+    group: root
+    mode: "0700"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      systemctl stop systemd-networkd || true
+      rm -rf /etc/systemd/network
+      mkdir -p /etc/systemd/network
+      tar -C /etc/systemd -xf /etc/systemd/network.hypervisor-rollback.tar
+      systemctl start systemd-networkd
+
 - name: Stage bridge netdev
   ansible.builtin.template:
     src: bridge.netdev.j2
@@ -166,6 +271,33 @@
       - "Staged: {{ networkd_paths.vlan_network }}"
       - "Staged: {{ networkd_paths.phys_network }}"
       - "Apply is {{ 'enabled' if (hypervisor_networking_apply | bool) else 'disabled' }}."
+
+- name: Stop any existing hypervisor networking rollback timer
+  ansible.builtin.shell: systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  when:
+    - hypervisor_networking_apply | bool
+    - hypervisor_networking_changed | bool
+  tags:
+    - risky
+
+- name: Arm hypervisor networking rollback timer
+  ansible.builtin.shell: >
+    systemd-run --on-active={{ hypervisor_networking_rollback_window }}
+    --unit=networkd-hypervisor-rollback
+    --description="hypervisor-networking rollback dead-man switch"
+    /usr/local/sbin/networkd-hypervisor-rollback
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when:
+    - hypervisor_networking_apply | bool
+    - hypervisor_networking_changed | bool
+  tags:
+    - risky
 
 - name: Flush networkd handlers now
   ansible.builtin.meta: flush_handlers

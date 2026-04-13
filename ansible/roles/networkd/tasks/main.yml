@@ -228,16 +228,10 @@
   ansible.builtin.set_fact:
     networkd_config_changed: "{{ networkd_template_result.changed | default(false) }}"
 
-- name: Generate timestamp for systemd-networkd backup
-  ansible.builtin.command: date +%Y%m%d%H%M%S
-  register: networkd_backup_ts
-  changed_when: false
-  when: networkd_config_changed
-
-- name: Backup /etc/systemd/network
+- name: Backup /etc/systemd/network before applying networkd config
   ansible.builtin.shell: |
     set -euo pipefail
-    tar -C /etc/systemd -cf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar network
+    tar -C /etc/systemd -cf /etc/systemd/network.networkd-rollback.tar network
   args:
     executable: /bin/bash
   changed_when: true
@@ -277,132 +271,42 @@
   # Rollback safeguard (dead-man switch)
   # --------------------------------
 
-  - name: Check for previously scheduled rollback job id
-    ansible.builtin.stat:
-      path: /var/run/networkd-rollback.job
-    register: networkd_rollback_job_file
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Read previously scheduled rollback job id
-    ansible.builtin.command: cat /var/run/networkd-rollback.job
-    register: prior_networkd_rollback_job_id
-    changed_when: false
-    failed_when: false
-    when: networkd_rollback_job_file.stat.exists
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Clear previously scheduled rollback job
-    ansible.builtin.command: "atrm {{ prior_networkd_rollback_job_id.stdout | trim }}"
-    register: prior_atrm_result
-    changed_when: true
-    failed_when: false
-    when:
-      - networkd_rollback_job_file.stat.exists
-      - prior_networkd_rollback_job_id.stdout is defined
-      - prior_networkd_rollback_job_id.stdout | trim | length > 0
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Ensure at is installed for rollback scheduling
-    ansible.builtin.package:
-      name: at
-      state: present
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Ensure atd service is enabled and running
-    ansible.builtin.systemd:
-      name: atd
-      enabled: true
-      state: started
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Build rollback command for systemd-networkd
-    ansible.builtin.set_fact:
-      networkd_rollback_cmd: >-
-        systemctl stop systemd-networkd &&
-        rm -rf /etc/systemd/network &&
-        mkdir -p /etc/systemd/network &&
-        tar -C /etc/systemd -xf /etc/systemd/network.backup.{{ networkd_backup_ts.stdout }}.tar &&
+  - name: Stage networkd rollback script
+    ansible.builtin.copy:
+      dest: /usr/local/sbin/networkd-rollback
+      owner: root
+      group: root
+      mode: "0700"
+      content: |
+        #!/bin/bash
+        set -euo pipefail
+        systemctl stop systemd-networkd || true
+        rm -rf /etc/systemd/network
+        mkdir -p /etc/systemd/network
+        tar -C /etc/systemd -xf /etc/systemd/network.networkd-rollback.tar
         systemctl start systemd-networkd
     tags:
       - risky
-      - rollback
-      - dev
-      - never
 
-  - name: Schedule rollback in 5 minutes using at
-    ansible.builtin.shell: |
-      set -euo pipefail
-      echo "{{ networkd_rollback_cmd }}" | at -M now + 5 minutes
+  - name: Stop any existing networkd rollback timer
+    ansible.builtin.shell: systemctl stop networkd-rollback.timer 2>/dev/null || true
     args:
       executable: /bin/bash
-    register: at_schedule
+    failed_when: false
+    changed_when: false
+    tags:
+      - risky
+
+  - name: Arm networkd rollback timer (5 minutes)
+    ansible.builtin.shell: >
+      systemd-run --on-active=300 --unit=networkd-rollback
+      --description="networkd rollback dead-man switch"
+      /usr/local/sbin/networkd-rollback
+    args:
+      executable: /bin/bash
     changed_when: true
     tags:
       - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Extract at job id
-    ansible.builtin.set_fact:
-      networkd_rollback_job_id: "{{ (at_schedule.stdout ~ at_schedule.stderr) | regex_search('job\\s+(\\d+)', '\\1') }}"
-    vars:
-      _unused: ""
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Assert rollback job id was captured
-    ansible.builtin.assert:
-      that:
-        - networkd_rollback_job_id is defined
-        - networkd_rollback_job_id | length > 0
-      fail_msg: >
-        Rollback job was scheduled, but the job id could not be parsed from output:
-        {{ at_schedule.stdout }} {{ at_schedule.stderr }}
-        Refusing to proceed.
-      success_msg: >
-        Rollback armed (at job {{ networkd_rollback_job_id }}) for +5 minutes.
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
-
-  - name: Record rollback job id for future cleanup
-    ansible.builtin.copy:
-      dest: /var/run/networkd-rollback.job
-      owner: root
-      group: root
-      mode: "0644"
-      content: "{{ networkd_rollback_job_id | regex_replace('\\D', '') }}\n"
-    tags:
-      - risky
-      - rollback
-      - dev
-      - never
 
   # --------------------------------
   # Apply systemd-networkd (risky)
@@ -489,18 +393,12 @@
   # Disarm rollback only after success
   # --------------------------------
 
-  - name: Cancel rollback job (atrm)
-    ansible.builtin.command: "atrm {{ networkd_rollback_job_id | regex_replace('\\D', '') }}"
-    register: atrm_result
+  - name: Disarm networkd rollback timer
+    ansible.builtin.shell: systemctl stop networkd-rollback.timer 2>/dev/null || true
+    args:
+      executable: /bin/bash
     changed_when: true
     failed_when: false
-    tags:
-      - risky
-
-  - name: Remove rollback job id record
-    ansible.builtin.file:
-      path: /var/run/networkd-rollback.job
-      state: absent
     tags:
       - risky
 
@@ -508,9 +406,7 @@
     ansible.builtin.debug:
       msg:
         - "systemd-networkd change committed."
-        - "Rollback job {{ networkd_rollback_job_id | default('n/a') }} canceled."
+        - "Rollback timer disarmed."
         - "Primary interface {{ net_primary_iface }} is up with IPv4 {{ primary_ipv4.stdout | trim }}."
-    when:
-      - networkd_rollback_job_id is defined
     tags:
       - risky

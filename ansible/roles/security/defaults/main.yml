@@ -1,4 +1,14 @@
 ---
+# TODO: IPv6 firewall coverage required before this role is considered complete.
+#
+# The hypervisor-networking role configures the server VLAN subinterface with
+# IPv6AcceptRA=yes. The host will acquire a SLAAC address and an IPv6 default
+# route whenever a router on the server VLAN sends RAs. SSH hardening and root
+# lock alone are insufficient once the host has a routable IPv6 address.
+#
+# When firewall tasks are added, rules must cover both IPv4 and IPv6.
+# Use nftables inet/ip6 tables or ensure ufw has IPV6=yes with matching rules.
+
 # Lock root account by default; set to false to skip.
 security_lock_root: true
 security_ssh_allow_users:

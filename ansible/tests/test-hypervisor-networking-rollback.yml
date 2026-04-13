@@ -1,0 +1,257 @@
+---
+# Test: hypervisor-networking rollback mechanism
+#
+# Verifies that the dead-man switch for hypervisor-networking is correctly
+# configured and will fire and restore the host without console access.
+#
+# Prerequisite: site.yml must have been run at least once so the rollback
+# script is staged on the host and the bridge config is the current state.
+#
+# USAGE
+# -----
+# Preflight only (no network disruption):
+#   ansible-playbook tests/test-hypervisor-networking-rollback.yml
+#
+# Full test including live fire (~10s network interruption):
+#   ansible-playbook tests/test-hypervisor-networking-rollback.yml --tags live-fire
+#
+# WHAT THE LIVE FIRE TEST DOES
+# ----------------------------
+# 1. Snapshots /etc/systemd/network as the rollback target.
+# 2. Drops a marker file into /etc/systemd/network/.
+# 3. Arms the rollback timer with a 60-second window.
+# 4. Waits 90 seconds — the timer fires, networkd stops, config is restored
+#    from snapshot (without marker), networkd restarts.
+# 5. Reconnects and asserts: marker gone, networkd active, default route present.
+#
+# The host IP should return to the same address after rollback since the
+# restored config is identical to the current working config. However,
+# DHCP is not guaranteed to reassign the same address — if your DHCP
+# server does not reserve leases by MAC, be prepared for a different IP.
+
+- name: Hypervisor networking rollback — preflight checks
+  hosts: hypervisor
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check rollback script exists
+      ansible.builtin.stat:
+        path: /usr/local/sbin/networkd-hypervisor-rollback
+      register: rollback_script_stat
+
+    - name: Assert rollback script is present and executable by root only
+      ansible.builtin.assert:
+        that:
+          - rollback_script_stat.stat.exists
+          - rollback_script_stat.stat.mode == "0700"
+        fail_msg: >
+          Rollback script missing or wrong permissions at
+          /usr/local/sbin/networkd-hypervisor-rollback.
+          Run site.yml first to stage the script.
+        success_msg: Rollback script present with correct permissions.
+
+    - name: Check rollback backup exists
+      ansible.builtin.stat:
+        path: /etc/systemd/network.hypervisor-rollback.tar
+      register: rollback_backup_stat
+
+    - name: Assert rollback backup is present
+      ansible.builtin.assert:
+        that: rollback_backup_stat.stat.exists
+        fail_msg: >
+          Rollback backup not found at /etc/systemd/network.hypervisor-rollback.tar.
+          Run site.yml first — the backup is written during every staging run.
+        success_msg: Rollback backup present.
+
+    - name: Check systemd-run is available
+      ansible.builtin.command: which systemd-run
+      register: systemd_run_path
+      changed_when: false
+
+    - name: Check no stale rollback timer is active
+      ansible.builtin.shell: >
+        systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null
+        || echo inactive
+      args:
+        executable: /bin/bash
+      register: timer_initial_state
+      changed_when: false
+      failed_when: false
+
+    - name: Assert no stale timer is active before testing
+      ansible.builtin.assert:
+        that: (timer_initial_state.stdout | trim) != "active"
+        fail_msg: >
+          A rollback timer is already active.
+          Disarm it before running this test:
+            systemctl stop networkd-hypervisor-rollback.timer
+        success_msg: No stale rollback timer active.
+
+    - name: Test arm-and-cancel cycle
+      block:
+        - name: Arm rollback timer with a safe 5-minute window
+          ansible.builtin.shell: >
+            systemd-run --on-active=300
+            --unit=networkd-hypervisor-rollback
+            --description="rollback preflight test — safe to cancel"
+            /usr/local/sbin/networkd-hypervisor-rollback
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Assert timer is active after arming
+          ansible.builtin.shell: >
+            systemctl is-active networkd-hypervisor-rollback.timer
+          args:
+            executable: /bin/bash
+          register: timer_armed_state
+          changed_when: false
+          failed_when: (timer_armed_state.stdout | trim) != "active"
+
+        - name: Cancel timer
+          ansible.builtin.shell: >
+            systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: Assert timer is no longer active after cancellation
+          ansible.builtin.shell: >
+            systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null
+            || echo inactive
+          args:
+            executable: /bin/bash
+          register: timer_cancelled_state
+          changed_when: false
+          failed_when: (timer_cancelled_state.stdout | trim) == "active"
+
+    - name: Preflight checks passed
+      ansible.builtin.debug:
+        msg:
+          - "Rollback script: present, permissions correct."
+          - "Rollback backup: present."
+          - "systemd-run: {{ systemd_run_path.stdout }}"
+          - "Arm-and-cancel cycle: passed."
+          - ""
+          - "To run the live fire test (brief ~10s network interruption):"
+          - "  ansible-playbook tests/test-hypervisor-networking-rollback.yml --tags live-fire"
+
+
+- name: Hypervisor networking rollback — live fire test
+  hosts: hypervisor
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Warn about network interruption
+      ansible.builtin.debug:
+        msg:
+          - "LIVE FIRE TEST — brief (~10s) network interruption ahead."
+          - "The rollback timer will fire in 60 seconds."
+          - "networkd will stop, config will be restored, networkd will restart."
+          - "Ansible will wait for reconnection automatically."
+          - "Expected recovery time: under 30 seconds after the timer fires."
+      tags: [never, live-fire]
+
+    - name: Snapshot current networkd config as rollback target
+      ansible.builtin.shell: |
+        set -euo pipefail
+        tar -C /etc/systemd -cf /etc/systemd/network.hypervisor-rollback.tar network
+      args:
+        executable: /bin/bash
+      changed_when: true
+      tags: [never, live-fire]
+
+    - name: Place marker file in networkd config directory
+      ansible.builtin.copy:
+        dest: /etc/systemd/network/test-rollback-marker
+        content: "rollback test marker — absence after rollback confirms restore ran\n"
+        owner: root
+        group: root
+        mode: "0644"
+      tags: [never, live-fire]
+
+    - name: Confirm marker is present before rollback
+      ansible.builtin.stat:
+        path: /etc/systemd/network/test-rollback-marker
+      register: marker_before
+      tags: [never, live-fire]
+
+    - name: Assert marker is present
+      ansible.builtin.assert:
+        that: marker_before.stat.exists
+      tags: [never, live-fire]
+
+    - name: Arm rollback timer with 60-second window
+      ansible.builtin.shell: >
+        systemd-run --on-active=60
+        --unit=networkd-hypervisor-rollback
+        --description="rollback live fire test"
+        /usr/local/sbin/networkd-hypervisor-rollback
+      args:
+        executable: /bin/bash
+      changed_when: true
+      tags: [never, live-fire]
+
+    - name: Confirm timer armed
+      ansible.builtin.shell: >
+        systemctl is-active networkd-hypervisor-rollback.timer
+      args:
+        executable: /bin/bash
+      register: timer_live_state
+      changed_when: false
+      failed_when: (timer_live_state.stdout | trim) != "active"
+      tags: [never, live-fire]
+
+    - name: Wait 90 seconds for rollback to fire and networkd to restart
+      ansible.builtin.pause:
+        seconds: 90
+      tags: [never, live-fire]
+
+    - name: Wait for host to be reachable after networkd restart
+      ansible.builtin.wait_for_connection:
+        delay: 0
+        timeout: 60
+      tags: [never, live-fire]
+
+    - name: Check marker file is absent after rollback
+      ansible.builtin.stat:
+        path: /etc/systemd/network/test-rollback-marker
+      register: marker_after
+      tags: [never, live-fire]
+
+    - name: Assert marker was removed by rollback
+      ansible.builtin.assert:
+        that: not marker_after.stat.exists
+        fail_msg: >
+          Marker file is still present — rollback did not run or restore failed.
+          Check: journalctl -u networkd-hypervisor-rollback.service
+        success_msg: Marker absent — rollback ran and restored config correctly.
+      tags: [never, live-fire]
+
+    - name: Assert systemd-networkd is active after rollback
+      ansible.builtin.systemd:
+        name: systemd-networkd
+      register: networkd_post_rollback
+      changed_when: false
+      failed_when: networkd_post_rollback.status.ActiveState != "active"
+      tags: [never, live-fire]
+
+    - name: Assert default route is present after rollback
+      ansible.builtin.shell: "ip route show default | head -n 1"
+      args:
+        executable: /bin/bash
+      register: post_rollback_route
+      changed_when: false
+      failed_when: (post_rollback_route.stdout | trim) == ""
+      tags: [never, live-fire]
+
+    - name: Live fire test passed
+      ansible.builtin.debug:
+        msg:
+          - "Rollback fired and completed successfully."
+          - "Marker removed: rollback script ran and restored from backup."
+          - "systemd-networkd: active."
+          - "Default route: {{ post_rollback_route.stdout | trim }}"
+      tags: [never, live-fire]
