@@ -7,5 +7,11 @@
     - identity
     - baseline
     - security
-    - networkd
-    - hypervisor-networking
+    - role: networkd
+      tags:
+        - never
+        - networking
+    - role: hypervisor-networking
+      tags:
+        - never
+        - networking

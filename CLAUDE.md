@@ -32,10 +32,10 @@ ansible-playbook site.yml
 ansible-playbook site.yml --tags identity
 
 # Stage networking config only (safe, no restart)
-ansible-playbook site.yml -e hypervisor_networking_apply=false
+ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=false
 
 # Apply networking (restarts systemd-networkd — risky)
-ansible-playbook site.yml -e hypervisor_networking_apply=true --tags risky
+ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=true
 
 # Lint
 ansible-lint
@@ -72,9 +72,11 @@ The `ansible/site.yml` playbook applies these roles in order to the `hypervisor`
 
 ### Networking Two-Phase Design
 
-The `hypervisor-networking` role is intentionally split into safe/risky phases:
-- **Default**: stages `.network`/`.netdev` files without restarting networking
-- **Apply** (`hypervisor_networking_apply: true` + `--tags risky`): restarts systemd-networkd and ends the play if the IP changes
+The networking roles (`networkd` and `hypervisor-networking`) are gated behind the `networking` tag and are skipped by a default `site.yml` run. Pass `--tags networking` to include them.
+
+The `hypervisor-networking` role is itself split into safe/risky phases:
+- **Default** (`--tags networking`): stages `.network`/`.netdev` files without restarting networking
+- **Apply** (`--tags networking` + `-e hypervisor_networking_apply=true`): restarts systemd-networkd and ends the play if the IP changes
 
 The `networkd` role has a rollback mechanism using `at` jobs (tagged `rollback dev never` — not run by default).
 
