@@ -1,0 +1,30 @@
+---
+# kvm role defaults
+#
+# Scope: install the KVM/libvirt stack on the hypervisor and prepare it for
+# guest creation by Terraform. This role does not create VMs and does not
+# touch host networking — the bridge `br0` is owned by hypervisor-networking.
+#
+# See docs/hypervisor-virtualization.md for the architectural model and
+# docs/hypervisor-virtualization-deploy.md for operational guidance.
+
+# Users granted non-root access to libvirt (members of the libvirt + kvm groups).
+# Defaults to the SSH user Ansible connects as so that the same operator who
+# converges the host can also drive virsh interactively without sudo.
+# Group membership only takes effect on the user's NEXT login session.
+kvm_admin_users:
+  - "{{ ansible_user }}"
+
+# Default libvirt storage pool.
+# MVP: a directory-backed pool on the root filesystem at libvirt's stock path.
+# Sufficient for a small homelab. Swap for an LVM- or ZFS-backed pool later
+# without disturbing the rest of the role; only the pool definition changes.
+kvm_storage_pool_name: default
+kvm_storage_pool_path: /var/lib/libvirt/images
+
+# Whether to undefine libvirt's built-in NAT network ("default" / virbr0).
+# This platform attaches guests directly to br0 from the networking role, so
+# the NAT bridge is dead weight: it duplicates DHCP, hides VMs behind a NAT,
+# and clutters `ip link`. Disabled by default for a single-purpose hypervisor.
+# Set to false if a guest genuinely needs an isolated NAT network.
+kvm_disable_default_network: true

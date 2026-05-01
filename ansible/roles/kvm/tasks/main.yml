@@ -1,0 +1,123 @@
+---
+# kvm role — install and configure the host-side virtualization stack.
+#
+# Ordering rationale:
+#   1. Install packages (idempotent, safe to re-run)
+#   2. Verify hardware acceleration is actually available before continuing
+#   3. Bring libvirtd up
+#   4. Grant operator access (group membership)
+#   5. Define and activate the default storage pool
+#   6. Remove the libvirt NAT network we don't use
+#
+# This role is host-only. VM definitions live in the Terraform tree and
+# attach to the existing `br0` bridge owned by hypervisor-networking.
+
+- name: Install KVM and libvirt packages
+  ansible.builtin.package:
+    name:
+      # qemu-system-x86 carries the actual hypervisor binary on Debian 12+.
+      # The legacy `qemu-kvm` package is a transitional alias and is being
+      # phased out (see Debian package tracker for bookworm/trixie).
+      - qemu-system-x86
+      - qemu-utils
+      - libvirt-daemon-system
+      - libvirt-clients
+      # virtinst gives us virt-install for one-off CLI VM creation while
+      # the Terraform layer is still being built out.
+      - virtinst
+      # ovmf provides UEFI firmware images. Modern guests (recent Debian,
+      # Windows Server, anything Secure Boot adjacent) expect UEFI.
+      - ovmf
+      # cloud-localds (from cloud-image-utils) is useful when seeding cloud
+      # images by hand outside Terraform.
+      - cloud-image-utils
+      # Required on the target by community.libvirt.virt_pool / virt_net.
+      - python3-libvirt
+      - python3-lxml
+    state: present
+
+- name: Check that /dev/kvm is exposed by the kernel
+  ansible.builtin.stat:
+    path: /dev/kvm
+  register: kvm_dev
+
+- name: Assert hardware virtualization is available
+  # Fails fast on a host where VT-x/AMD-V is disabled in firmware. Without
+  # /dev/kvm, libvirt would silently fall back to software emulation, which
+  # is unusable for real workloads.
+  ansible.builtin.assert:
+    that:
+      - kvm_dev.stat.exists
+    fail_msg: >
+      /dev/kvm is missing. Enable VT-x/AMD-V in firmware and reboot before
+      re-running this role.
+
+- name: Ensure libvirtd is started and enabled
+  ansible.builtin.systemd:
+    name: libvirtd
+    state: started
+    enabled: true
+
+- name: Add admin users to libvirt and kvm groups
+  # Membership in `libvirt` lets the user manage system-level domains via
+  # the unix socket without sudo; `kvm` grants direct /dev/kvm access for
+  # tools that bypass libvirt. New membership only applies to future logins.
+  ansible.builtin.user:
+    name: "{{ item }}"
+    groups:
+      - libvirt
+      - kvm
+    append: true
+  loop: "{{ kvm_admin_users }}"
+
+- name: Ensure default storage pool directory exists
+  # 0711 matches Debian's libvirt packaging default for /var/lib/libvirt/images:
+  # owners traverse, no world-readable VM disks.
+  ansible.builtin.file:
+    path: "{{ kvm_storage_pool_path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0711"
+
+- name: Define default libvirt storage pool
+  community.libvirt.virt_pool:
+    name: "{{ kvm_storage_pool_name }}"
+    state: present
+    xml: |
+      <pool type='dir'>
+        <name>{{ kvm_storage_pool_name }}</name>
+        <target>
+          <path>{{ kvm_storage_pool_path }}</path>
+        </target>
+      </pool>
+
+- name: Activate default libvirt storage pool
+  community.libvirt.virt_pool:
+    name: "{{ kvm_storage_pool_name }}"
+    state: active
+
+- name: Autostart default libvirt storage pool
+  # Without autostart, the pool is inactive after host reboot and Terraform
+  # operations fail until someone manually `virsh pool-start default`s it.
+  community.libvirt.virt_pool:
+    name: "{{ kvm_storage_pool_name }}"
+    autostart: true
+
+- name: Check whether libvirt default NAT network is defined
+  # `virt_net: state=absent` is itself idempotent, but the precheck keeps the
+  # role's --check output honest after the network has already been removed.
+  ansible.builtin.command: virsh net-info default
+  register: libvirt_default_net
+  changed_when: false
+  failed_when: false
+  when:
+    - kvm_disable_default_network | bool
+
+- name: Undefine libvirt default NAT network
+  community.libvirt.virt_net:
+    name: default
+    state: absent
+  when:
+    - kvm_disable_default_network | bool
+    - libvirt_default_net.rc == 0
