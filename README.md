@@ -13,6 +13,7 @@ See `docs/hypervisor-networking.md` for network role and traffic model
 See `docs/hypervisor-networking-deploy.md` for network deployment workflow
 See `docs/hypervisor-virtualization.md` for KVM/libvirt model and boundaries
 See `docs/hypervisor-virtualization-deploy.md` for KVM deployment workflow
+See `docs/hypervisor-deploy-runbook.md` for the end-to-end rebuild + verification runbook
 See `docs/hypervisor-bootstrap.md` for bootstrap steps
 See `docs/ansible-inventory.md` for private inventory format
 See `docs/ansible-inventory.example.yml` for a placeholder-only inventory template
