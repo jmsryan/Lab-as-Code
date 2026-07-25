@@ -1,3 +1,9 @@
+## Unreleased
+
+Documentation:
+- Add `docs/hypervisor-deploy-runbook.md`: a top-level, end-to-end rebuild runbook that sequences bootstrap, base convergence, networking migration, and DNS verification with a checkpoint gate at each phase. Uses name-based (FQDN) inventory throughout and doubles as the acceptance test for DHCP-only DNS resolution via dnsmasq.
+- Link the runbook from the `README.md` documentation index.
+
 ## v0.1.0 - 2026-01-26 (pre-release)
 
 Scope: hypervisor initial configuration.
