@@ -99,6 +99,7 @@ This specification is **implementation-agnostic** and intentionally omits enviro
 - Physical NIC attached to bridge
 - Host IP address assigned only within the infrastructure VLAN
 - No host-level routing or NAT between VLANs
+- DNS and hostname resolution provided externally via DHCP; no local resolver configuration
 
 ---
 

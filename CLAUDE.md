@@ -89,4 +89,5 @@ The `networkd` role has a rollback mechanism using `at` jobs (tagged `rollback d
 - No real hostnames, IPs, or VLAN IDs in the public repo — operational values live only in private inventory
 - The hypervisor is a Layer-2 participant only; no routing, NAT, or inter-VLAN filtering on-host
 - Host IP addressing is DHCP-only on the infrastructure/server VLAN subinterface
+- DNS and hostname resolution are provided externally by the upstream DHCP server (dnsmasq) — no DNS/resolver configuration is staged anywhere in this repo; the `identity` role's `system_hostname` is what gets registered
 - `gather_facts: false` in `site.yml` — roles use selective fact gathering via the `networkd/detect.yml` task

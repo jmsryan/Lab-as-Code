@@ -182,6 +182,7 @@ Terraform **does not**:
 ## Boundary Enforcement Rules
 
 - Any configuration that must persist belongs to **Ansible**
+- DNS and hostname resolution are owned by external network infrastructure (upstream DHCP/dnsmasq), not by any tool in this platform
 - cloud-init state must always be considered disposable
 - Bootstrap logic must not leak into Ansible
 - Long-lived configuration must not leak into cloud-init

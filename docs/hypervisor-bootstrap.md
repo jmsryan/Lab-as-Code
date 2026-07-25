@@ -36,7 +36,7 @@ should be required.
 
 - Physical access to the host
 - A workstation capable of writing USB media
-- Network connectivity providing DHCP on the infrastructure network
+- Network connectivity providing DHCP (and DNS, via the upstream dnsmasq) on the infrastructure network
 - SSH keypair for the automation user
 
 ---

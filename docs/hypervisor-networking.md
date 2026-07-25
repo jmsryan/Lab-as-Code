@@ -127,6 +127,7 @@ The hypervisor itself:
 - has an IP address only on the infrastructure network
 - does not require IP addresses on other VLANs
 - does not originate traffic on workload networks unless explicitly required
+- relies on the upstream DHCP server for DNS and hostname resolution; no local DNS/resolver configuration is staged
 
 This reinforces the principle that:
 > the hypervisor is *of* the infrastructure network, not *between* networks.

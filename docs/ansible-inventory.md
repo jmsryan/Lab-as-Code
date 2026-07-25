@@ -43,6 +43,7 @@ all:
 
 - `ansible_host` is the address used by Ansible to connect
 - `system_hostname` and `system_timezone` are used by the base roles
+- `system_hostname` is also what the DHCP client advertises upstream, so it's what the network's DNS (dnsmasq) resolves the host by
 - `net_phys_iface` must be the physical NIC name (e.g., `eno1`)
 - `net_bridge_name` defaults to `br0` but can be changed
 - `net_server_vlan` is the host's own VLAN (PVID)

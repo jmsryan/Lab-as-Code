@@ -33,7 +33,9 @@ This guide assumes the architectural intent described in:
 - `NetworkManager` and `ifupdown` are **not** actively managing interfaces
 - The host has basic DHCP connectivity on the infrastructure VLAN
 
-> DHCP-only on the server VLAN is an intentional design choice.
+> DHCP-only on the server VLAN is an intentional design choice. DNS and
+> hostname resolution are provided by the upstream DHCP server (dnsmasq);
+> this role does not stage any resolver configuration.
 
 ---
 
