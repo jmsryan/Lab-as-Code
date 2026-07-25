@@ -69,7 +69,6 @@
 - name: Set primary interface facts
   ansible.builtin.set_fact:
     net_primary_iface: "{{ ansible_default_ipv4.interface }}"
-    net_primary_gateway: "{{ ansible_default_ipv4.gateway }}"
 
 # --------------------------------
 # Short-circuit if networkd already owns the host
@@ -165,43 +164,6 @@
       bond={{ net_primary_iface_bond.stat.exists }},
       vlan={{ net_primary_iface_vlan.stat.exists }}.
       Refusing to proceed.
-
-- name: Detect primary IPv4 CIDR on default interface
-  ansible.builtin.shell: "ip -4 -o addr show dev {{ net_primary_iface }} scope global | awk '{print $4}' | head -n 1"
-  args:
-    executable: /bin/bash
-  register: net_primary_ipv4_cidr
-  changed_when: false
-
-- name: Detect if primary IPv4 is DHCP (dynamic)
-  ansible.builtin.shell: "ip -4 -o addr show dev {{ net_primary_iface }} scope global | grep -q ' dynamic ' && echo true || echo false"
-  args:
-    executable: /bin/bash
-  register: net_primary_ipv4_dynamic
-  changed_when: false
-
-- name: Detect DNS servers from resolv.conf
-  ansible.builtin.shell: "awk '/^nameserver/{print $2}' /etc/resolv.conf | tr '\n' ' '"
-  args:
-    executable: /bin/bash
-  register: net_dns_servers
-  changed_when: false
-
-- name: Detect DNS search domains from resolv.conf
-  ansible.builtin.shell: "awk '/^(search|domain) /{for (i=2;i<=NF;i++) printf $i\" \"}' /etc/resolv.conf"
-  args:
-    executable: /bin/bash
-  register: net_dns_domains
-  changed_when: false
-
-- name: Assert primary interface has IPv4 CIDR
-  ansible.builtin.assert:
-    that:
-      - net_primary_ipv4_cidr.stdout is defined
-      - net_primary_ipv4_cidr.stdout | trim | length > 0
-    fail_msg: >
-      No IPv4 address detected on {{ net_primary_iface }}.
-      Refusing to stage systemd-networkd config without an address.
 
 # --------------------------------
 # Stage systemd-networkd config
