@@ -66,12 +66,17 @@ This specification is **implementation-agnostic** and intentionally omits enviro
 
 - **User Model**
   - Single automation user
-  - No long-lived human accounts
+  - No long-lived human accounts — any other local human-range account is
+    actively removed on every convergence, not merely never created
 
 - **Authentication**
   - SSH key–only access
   - Password authentication disabled
-  - Root login disabled
+  - Root login disabled **over SSH, unconditionally**
+  - A root **console** password remains available as an out-of-band,
+    break-glass credential: set once by hand at install time, never known to
+    or managed by any tool in this platform, and usable only from physical
+    or virtual console — never over the network
 
 - **Access Domains**
   - Trusted internal infrastructure network

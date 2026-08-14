@@ -1,0 +1,14 @@
+---
+# identity role defaults
+#
+# Scope: establish the hypervisor's permanent identity (hostname, DHCP
+# hostname propagation) and enforce that svc-ansible is the ONLY local
+# account with sudo/shell access. See docs/hypervisor-design.md §4.
+
+# Remove any local human-range account (UID 1000-60000, Debian's own
+# /etc/login.defs UID_MIN/UID_MAX defaults) other than svc-ansible.
+# The Debian installer (docs/hypervisor-bootstrap.md Step 3) creates a
+# personal sudo user alongside root; this repo's design is svc-ansible-only
+# sudo access. Set to false as an escape hatch if a host genuinely needs to
+# keep a secondary human account.
+identity_prune_human_users: true

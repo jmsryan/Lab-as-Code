@@ -2,6 +2,21 @@
 - name: Set permanent hostname
   ansible.builtin.hostname:
     name: "{{ system_hostname }}"
+- name: Check for isc-dhcp-client configuration
+  ansible.builtin.stat:
+    path: /etc/dhcp/dhclient.conf
+  register: identity_dhclient_conf
+- name: Ensure dhclient advertises the current hostname via DHCP (option 12)
+  # Debian's shipped dhclient.conf already sets this by default, but the
+  # value is evaluated at lease-renewal time, not by this task — a hostname
+  # change here still needs a manual renewal/reboot (see
+  # docs/hypervisor-deploy-runbook.md) before dnsmasq re-registers it.
+  ansible.builtin.lineinfile:
+    path: /etc/dhcp/dhclient.conf
+    regexp: '^\s*#?\s*send\s+host-name\b.*$'
+    line: "send host-name = gethostname();"
+    insertafter: EOF
+  when: identity_dhclient_conf.stat.exists
 - name: Ensure automation user exists
   ansible.builtin.user:
     name: svc-ansible
@@ -26,3 +41,27 @@
     state: present
     key: "{{ lookup('file', 'files/ssh_keys/id_svc-ansible.pub') }}"
     exclusive: true
+- name: Discover local passwd database entries
+  ansible.builtin.getent:
+    database: passwd
+  when: identity_prune_human_users | bool
+- name: Remove stray human user accounts other than svc-ansible
+  # UID 1000-60000 is Debian's own UID_MIN/UID_MAX convention for human
+  # accounts (login.defs(5)); this range already excludes nobody/nogroup
+  # (65534) and all system/service accounts (<1000). This removes the
+  # personal sudo user the Debian installer creates alongside root — see
+  # docs/hypervisor-bootstrap.md Step 3. Irreversible: home directory and
+  # mail spool are removed too. No force: if the account has a live
+  # session/owned process, this fails loudly rather than killing it.
+  ansible.builtin.user:
+    name: "{{ item.key }}"
+    state: absent
+    remove: true
+  loop: "{{ ansible_facts.getent_passwd | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - identity_prune_human_users | bool
+    - item.key != 'svc-ansible'
+    - (item.value[1] | int) >= 1000
+    - (item.value[1] | int) <= 60000

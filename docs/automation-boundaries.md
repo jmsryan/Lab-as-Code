@@ -142,6 +142,10 @@ Ansible **does not**:
 - Manage VM lifecycle or infrastructure objects
 - Act as an interactive administration tool
 - Perform ad-hoc or emergency configuration changes outside code
+- Set, know, or manage the root account's password — the console-only
+  break-glass credential is deliberately outside the authority of all three
+  tools (cloud-init, Ansible, Terraform); it is set once by hand at install
+  time and never appears in git, inventory, or vault
 
 ---
 

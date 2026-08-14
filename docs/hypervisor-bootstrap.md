@@ -94,7 +94,19 @@ to make sure a reused drive or host gets a genuinely clean first boot
 
 - Boot the system from the Debian installation USB
 - Install a minimal Debian system
-- Set a **temporary root password** for use during installation only
+- Set a **deliberate, durable root password** and store it securely (e.g., a
+  password manager) — this is **not** a throwaway installation-time password.
+  Ansible's `security` role never locks or overwrites it, and it becomes the
+  host's permanent **console-only break-glass credential**: usable only from
+  physical or virtual console, never over SSH (`PermitRootLogin no` blocks
+  root over SSH unconditionally regardless of this password). See
+  `docs/hypervisor-design.md` §4.
+- The installer also prompts for a personal (non-root) user with sudo access.
+  This account is expected and does not need a memorable password — Ansible's
+  `identity` role deletes it automatically on the first `site.yml` run (only
+  `svc-ansible` is permitted to keep sudo/shell access). Copy anything needed
+  out of its home directory before that first run; the deletion is
+  irreversible.
 - Configure networking using DHCP
 
 No additional software or configuration is performed during this step.

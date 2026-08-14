@@ -9,11 +9,15 @@
 # docs/hypervisor-virtualization-deploy.md for operational guidance.
 
 # Users granted non-root access to libvirt (members of the libvirt + kvm groups).
-# Defaults to the SSH user Ansible connects as so that the same operator who
-# converges the host can also drive virsh interactively without sudo.
+# Hardcoded to svc-ansible, the platform's single automation user (see
+# docs/hypervisor-design.md §4), so it can drive virsh without sudo.
+# Not "{{ ansible_user }}": that magic variable is only populated from an
+# inventory-level ansible_user/-u/ANSIBLE_USER, not from ansible.cfg's
+# remote_user (which is how this repo sets the connection user) — it's
+# undefined here and fails the play.
 # Group membership only takes effect on the user's NEXT login session.
 kvm_admin_users:
-  - "{{ ansible_user }}"
+  - svc-ansible
 
 # Default libvirt storage pool.
 # MVP: a directory-backed pool on the root filesystem at libvirt's stock path.

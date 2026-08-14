@@ -1,7 +1,7 @@
 # Lab-as-Code
 Homelab declarative configuration from bare-metal hypervisor to docker applications
 
-Pre-release: v0.1.0 (January 26, 2026) - hypervisor initial configuration ready
+Pre-release: v0.2.0 (August 13, 2026) - MVP hypervisor host confirmed working end-to-end
 
 
 

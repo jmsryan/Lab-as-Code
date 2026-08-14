@@ -3,13 +3,21 @@
 ## Purpose
 
 This runbook is the **top-level, end-to-end procedure** for rebuilding the
-hypervisor from a wiped disk to a fully converged, networked KVM host. It
-sequences the manual bootstrap and the per-role deploy guides into one ordered
-path with a verification gate at every stage.
+hypervisor from a wiped disk to a converged MVP host. It sequences the manual
+bootstrap and the per-role deploy guides into one ordered path with a
+verification gate at every stage.
 
 It exists to make a full rebuild repeatable and safe: each phase has a
-checkpoint that must pass before the next begins, and the final phase doubles as
-the acceptance test for DHCP-only DNS (dnsmasq-provided hostname resolution).
+checkpoint that must pass before the next begins. The MVP path (Phases 0-2.5)
+is self-contained and includes its own DHCP-DNS registration proof (Phase
+2.5) — it does not depend on the bridge/VLAN networking migration. Phases 3
+and 4 cover that migration; they are implemented but **not yet validated on
+real hardware**, and are optional/deferred until bridge work resumes.
+
+**Status:** Phases 0-2.5 (the full MVP path) have been run end-to-end on real
+hardware and confirmed working, including the Phase 2.5 DNS registration
+checkpoint. Phases 3-4 (bridge/VLAN) remain implemented-but-unvalidated, as
+above.
 
 This runbook drives the existing guides rather than restating them:
 
@@ -25,8 +33,12 @@ This runbook drives the existing guides rather than restating them:
 
 - Covers a **full rebuild** of a single hypervisor host, bare metal to
   converged.
-- Sequences `identity`, `baseline`, `security`, `kvm`, `networkd`, and
-  `hypervisor-networking` in the correct order with safety gates.
+- The MVP path is `identity` → `baseline` → `security` → `kvm` (Phases 0-2.5)
+  — a solid hostname/DHCP/sudo/break-glass posture with no bridge/VLAN work.
+  **Confirmed working end-to-end on real hardware.**
+- `networkd` and `hypervisor-networking` (Phases 3-4) are covered too, but are
+  optional and deferred: built and gated behind `--tags networking`, not
+  required for MVP, and not yet exercised against real hardware.
 - Does **not** cover VM creation (Terraform, a later release).
 - Assumes the architectural intent in `docs/hypervisor-design.md` and
   `docs/automation-boundaries.md`.
@@ -36,35 +48,45 @@ This runbook drives the existing guides rather than restating them:
 ## Naming and Inventory Model
 
 Inventory is **name-based throughout**: `ansible_host` is always an FQDN, never
-a DHCP lease IP. cloud-init registers the host in dnsmasq under its bootstrap
-name (`local-hostname` in `cloud-init/meta-data`) before Ansible ever runs, so
-name resolution works from the first boot.
+a static IP or a DHCP-lease IP. Real hostnames/domains only ever live in the
+gitignored `ansible/inventory/hosts.yml` — never in this repo's tracked docs
+or example files, which use placeholders only.
 
-There is exactly **one** inventory change across the whole rebuild: at the
-Phase 2 boundary the host's name flips from the cloud-init bootstrap name to the
-permanent `system_hostname` set by the `identity` role. After that the name is
-stable — including across the Phase 3 IP move, where dnsmasq simply re-points the
-A record to the new lease. This is the operational payoff of the DHCP-only DNS
-design: no lease-IP hunting on re-runs.
+`ansible_host` is set **once**, to the **permanent** name (matching
+`system_hostname`'s domain), and is never edited again. The catch: that name
+doesn't resolve until the `identity` role has run once and Phase 2.5 confirms
+dnsmasq has registered it. cloud-init's bootstrap name (`local-hostname` in
+`cloud-init/meta-data`) resolves immediately, though, so Phases 1 and the
+first Phase 2 run reach the host by overriding the connection target on the
+command line — `-e ansible_host=<bootstrap-fqdn>` — instead of writing a
+transient value into inventory. Once Phase 2.5 confirms the permanent name
+resolves, the override is dropped and every command after that (including
+the optional, deferred Phase 3 IP move, where dnsmasq re-points the same A
+record to the new lease) just uses plain `ansible-playbook site.yml`. Net
+result: **zero** inventory edits across the whole rebuild.
 
 ```
-Phase 0  Wipe + cloud-init bootstrap (manual)
+Phase 0    Wipe + cloud-init bootstrap (manual)
   └─ gate: ssh svc-ansible@<bootstrap-fqdn> ; hostname = cloud-init local-hostname
-Phase 1  Controller prep (inventory ansible_host = bootstrap FQDN + collections)
-  └─ gate: ansible hypervisor -m ping  → pong
-Phase 2  Base convergence  (identity → baseline → security → kvm ; networking SKIPPED)
-  ├─ identity sets system_hostname → host re-registers under new name
-  ├─ update inventory ansible_host: bootstrap FQDN → system_hostname FQDN
+Phase 1    Controller prep (inventory ansible_host = permanent FQDN, unresolved yet + collections)
+  └─ gate: ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>  → pong
+Phase 2    Base convergence (identity → baseline → security → kvm ; networking SKIPPED)
+  ├─ run with -e ansible_host=<bootstrap-fqdn> (permanent name doesn't resolve yet)
+  ├─ identity sets system_hostname → deletes the installer's personal sudo user → ensures dhclient sends hostname
   └─ gate: hostname == system_hostname ; ping still pong ; chrony/libvirtd active ;
            /dev/kvm ; virsh pool-list default active
-Phase 3  Networking migration + bridge  (RISKY — needs console/OOB)
+Phase 2.5  DNS registration checkpoint (MVP's DNS proof — no bridge required)
+  ├─ reboot host (or renew DHCP lease from console) so dnsmasq re-registers the new name
+  └─ gate: another host resolves system_hostname via dnsmasq → drop the -e override from here on
+── MVP ends here ──────────────────────────────────────────────────────────
+Phase 3    Networking migration + bridge (OPTIONAL, DEFERRED, RISKY — needs console/OOB)
   ├─ stage:  --tags networking  -e hypervisor_networking_apply=false
   │     └─ gate: staged 10-<iface>.network is DHCP-only (direct change proof)
   ├─ apply:  --tags networking  -e hypervisor_networking_apply=true
   ├─ reconnect on br0.<vlan> — SAME FQDN, no inventory edit (dnsmasq re-points A)
   └─ re-run: --tags networking  → verify-and-disarm cancels rollback timer
-Phase 4  DNS / hostname acceptance test
-  └─ host resolves names via dnsmasq AND is itself resolvable by system_hostname
+Phase 4    Post-migration DNS re-verification (OPTIONAL, DEFERRED)
+  └─ host still resolves names via dnsmasq AND is itself resolvable by system_hostname
 ```
 
 All Ansible commands run from the `ansible/` directory.
@@ -103,14 +125,15 @@ by name immediately, before any Ansible run.
 ## Phase 1 — Controller Prep
 
 1. Create the private inventory at `ansible/inventory/hosts.yml` per
-   `docs/ansible-inventory.md`. Set `ansible_host` to the **bootstrap FQDN**
-   (the cloud-init `local-hostname`), plus:
-   - `system_hostname`, `system_timezone`
-   - `net_phys_iface` (physical NIC, e.g. `eno1`)
-   - `net_bridge_name: br0`
-   - `net_server_vlan` (host PVID)
-   - `net_allowed_vlans` (list of trunked VLAN IDs — **must include**
-     `net_server_vlan`)
+   `docs/ansible-inventory.md`. Set `ansible_host` to the **permanent** FQDN
+   (matching the `system_hostname` you're about to set — e.g.
+   `hypervisor.<your-domain>`), not the cloud-init bootstrap name. It won't
+   resolve yet; that's expected, and you never edit this file again for
+   naming reasons. Also set `system_hostname` and `system_timezone` — that's
+   everything the MVP path (Phases 0-2.5) needs. `net_phys_iface`,
+   `net_bridge_name`, `net_server_vlan`, and `net_allowed_vlans` are only
+   required if/when you run the optional, deferred Phase 3
+   (`--tags networking`).
 2. Install required collections:
 
    ```bash
@@ -120,8 +143,12 @@ by name immediately, before any Ansible run.
 
 **Checkpoint:**
 
-- `ansible hypervisor -m ping` returns `pong` — proves name-based reach and key
-  auth are working.
+```bash
+ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>
+```
+
+Returns `pong` — proves name-based reach and key auth are working, via the
+cloud-init bootstrap name (the only one that resolves at this point).
 
 ---
 
@@ -131,30 +158,67 @@ The default `site.yml` run applies `identity → baseline → security → kvm`.
 two networking roles are gated behind `never` + `networking` and are **skipped**
 by a default run.
 
+`ansible_host` in inventory is the permanent FQDN, which doesn't resolve
+until *after* this run and Phase 2.5. So this first run (and this run only)
+needs the `-e ansible_host=` override pointed at the cloud-init bootstrap
+name:
+
 ```bash
 cd ansible
-ansible-playbook site.yml --check    # dry run
-ansible-playbook site.yml            # apply
+ansible-playbook site.yml --check -e ansible_host=<bootstrap-fqdn>    # dry run
+ansible-playbook site.yml -e ansible_host=<bootstrap-fqdn>            # apply
+ansible-playbook site.yml -e ansible_host=<bootstrap-fqdn>            # apply again
 ```
 
-The `identity` role changes the host's name from the cloud-init bootstrap name
-to `system_hostname`, and the host re-registers in dnsmasq under the new name.
+> **Run this twice.** On a freshly bootstrapped host, some `kvm`-role tasks
+> depend on state this same run just created (packages just installed,
+> `libvirtd` just started/enabled) and don't fully converge on the first
+> pass — they show as skipped or incomplete, then complete on the second
+> run. This is expected, not a bug; a third run should then show zero
+> changes. See "Optional Regression" below.
 
-- If `system_hostname` **differs** from the cloud-init `local-hostname`
-  (`hv-01`), **update inventory `ansible_host` to the `system_hostname` FQDN
-  now** and confirm `ansible hypervisor -m ping` still returns `pong`.
-- If the operator set `system_hostname: hv-01`, no inventory change is needed.
+> If you deliberately set `system_hostname` equal to the cloud-init bootstrap
+> name (e.g. both `hv-01`), the permanent name already resolves and you can
+> skip the override entirely, even on this first run.
+
+The `identity` role changes the host's name from the cloud-init bootstrap name
+to `system_hostname`, deletes the installer's personal sudo user (see
+`docs/hypervisor-bootstrap.md` Step 3), and ensures dhclient will advertise
+the new hostname on its next lease renewal. The `security` role hardens SSH
+and leaves root's console password untouched (break-glass).
 
 **Checkpoint:**
 
-- On the host, `hostname` equals `system_hostname`, and the controller reaches
-  it by the new FQDN (`ansible hypervisor -m ping` → `pong`). This already
-  exercises dnsmasq registration over the ifupdown/dhclient path; Phase 4 is the
-  formal DNS acceptance.
+- On the host, `hostname` equals `system_hostname`. The controller still
+  reaches it via the `-e ansible_host=<bootstrap-fqdn>` override
+  (`ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>` → `pong`) —
+  the permanent FQDN doesn't resolve yet. That's Phase 2.5, below, since it
+  needs a DHCP lease renewal this playbook run deliberately doesn't force.
 - `systemctl is-active chrony libvirtd` reports both `active`.
 - `/dev/kvm` exists.
 - `virsh pool-list --all` shows the `default` pool active with autostart on.
 - `virsh net-list --all` does **not** list the `default` NAT network.
+- The installer's personal user is gone:
+
+  ```bash
+  ansible hypervisor -m command -a "getent passwd <personal-account>" -e ansible_host=<bootstrap-fqdn>
+  # expect: empty output / non-zero rc
+  ```
+
+- Root break-glass access works from console but not SSH (still via the
+  bootstrap name at this point — the permanent FQDN isn't resolvable until
+  Phase 2.5):
+
+  ```bash
+  # from the controller or any remote machine:
+  ssh root@<bootstrap-fqdn>        # expect: Permission denied / connection refused
+  ssh svc-ansible@<bootstrap-fqdn> # expect: success, unaffected
+  ```
+
+  ```bash
+  # on host, via physical/virtual console only:
+  # log in as root using the password set during OS install (Step 3) — expect success
+  ```
 
 > Per `docs/hypervisor-virtualization-deploy.md`: `virsh` without sudo requires
 > the admin user to re-login after this run — group membership only applies on
@@ -163,7 +227,53 @@ to `system_hostname`, and the host re-registers in dnsmasq under the new name.
 
 ---
 
-## Phase 3 — Networking Migration + Bridge (RISKY)
+## Phase 2.5 — DNS Registration Checkpoint (MVP)
+
+This is the MVP's DNS proof — it does not require the bridge/VLAN migration
+in Phase 3. `identity` set the new hostname and made sure dhclient is
+configured to advertise it, but the change only takes effect on the next
+DHCP lease renewal. Renewing automatically from within the same Ansible run,
+over the same interface Ansible is connected through, carries the same
+category of connectivity risk the bridge migration is deferred to avoid — so
+this step is manual, from console/out-of-band, not part of `site.yml`:
+
+```bash
+# on host, via console/OOB — NOT over the live Ansible SSH session:
+sudo reboot
+# — or, without a reboot —
+sudo dhclient -r <iface> && sudo dhclient <iface>
+```
+
+> **Don't just wait for it.** Left alone, dhclient only renews (and re-sends
+> the hostname) at the DHCP server's lease interval — commonly up to 24
+> hours, and it depends entirely on your DHCP server's configured lease
+> time. A reboot or the manual renewal above is the reliable way to get the
+> new hostname into dnsmasq promptly; without one, the host can look
+> unreachable-by-name for a long time even though nothing is actually wrong.
+
+**Checkpoint:**
+
+```bash
+# from another host on the network, after the reboot/renewal:
+getent hosts <system_hostname>
+# or
+resolvectl query <system_hostname>
+```
+
+Either resolves to the host's current lease IP — proof that `identity`'s
+hostname change and dhclient's `send host-name` config actually registered
+with dnsmasq.
+
+**MVP ends here — confirmed working end-to-end on real hardware.** Phases 3
+and 4 below are optional, deferred bridge/VLAN work — skip them unless
+you're specifically picking that back up.
+
+---
+
+## Phase 3 — Networking Migration + Bridge (OPTIONAL, DEFERRED, RISKY)
+
+> This phase is implemented but has not been validated end-to-end on real
+> hardware. Treat it as a starting point to test carefully, not a proven path.
 
 > **Have console or out-of-band access before starting.** The host IP moves to
 > the server-VLAN subinterface and connectivity may drop mid-play. Two
@@ -232,9 +342,11 @@ the 10-minute rollback timer.
 
 ---
 
-## Phase 4 — DNS / Hostname Acceptance Test
+## Phase 4 — Post-Migration DNS Re-Verification (OPTIONAL, DEFERRED)
 
-This phase confirms the DHCP-only DNS change end to end.
+Phase 2.5 already proved DHCP-DNS registration works on the MVP path. This
+phase is a regression check that the same mechanism still holds after the
+Phase 3 bridge/VLAN move — not the introduction of DNS validation.
 
 On the host:
 
@@ -248,31 +360,41 @@ On the host:
 
 From another host or the router:
 
-- The hypervisor's own `system_hostname` resolves to its current lease IP. This
-  is the end-to-end proof that networkd's `SendHostname=yes` default registered
-  the `identity`-role hostname in dnsmasq (DHCP option 12).
+- The hypervisor's own `system_hostname` still resolves to its current lease
+  IP after the move — confirming networkd's `SendHostname=yes` default keeps
+  the DHCP-DNS registration Phase 2.5 already proved, now on the bridge/VLAN
+  subinterface instead of the primary NIC.
 
 ---
 
 ## Validation Checklist
 
 - Phase 0: SSH by bootstrap name works; `hostname` = cloud-init `local-hostname`.
-- Phase 1: `ansible hypervisor -m ping` → `pong`.
+- Phase 1: `ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>` → `pong`.
 - Phase 2: `hostname` = `system_hostname`; ping still `pong` after the FQDN
   switch; `chrony` and `libvirtd` active; `/dev/kvm` present; `default` pool
-  active; no `default` NAT network.
-- Phase 3: staged `10-<iface>.network` is DHCP-only; bridge and VLAN subif come
-  up after apply; rollback timers disarmed.
-- Phase 4: host resolves lab names via dnsmasq (forward + reverse) and is itself
-  resolvable by `system_hostname`.
+  active; no `default` NAT network; installer's personal user is gone;
+  `ssh root@<host>` rejected while console root login and `ssh svc-ansible@<host>`
+  both succeed.
+- Phase 2.5 (MVP complete here): after reboot/lease renewal, another host
+  resolves `system_hostname` via dnsmasq.
+- Phase 3 (optional/deferred): staged `10-<iface>.network` is DHCP-only;
+  bridge and VLAN subif come up after apply; rollback timers disarmed.
+- Phase 4 (optional/deferred): host still resolves lab names via dnsmasq
+  (forward + reverse) and is itself resolvable by `system_hostname` after the
+  bridge move.
 
 ---
 
 ## Optional Regression
 
-- Idempotency: `ansible-playbook site.yml` a second time makes zero changes
-  across `identity`, `baseline`, `security`, and `kvm`.
-- Rollback safety test (run from `ansible/`):
+- Idempotency: on a freshly bootstrapped host, Phase 2's first-run
+  convergence commonly takes **two** `site.yml` runs (see the note under
+  Phase 2) — a *third* run should then make zero changes across `identity`,
+  `baseline`, `security`, and `kvm`. On an already-converged host, a single
+  re-run making zero changes is the expected result.
+- Rollback safety test (run from `ansible/`) — covers the optional/deferred
+  Phase 3 machinery specifically, not the MVP path:
 
   ```bash
   ansible-playbook tests/test-hypervisor-networking-rollback.yml
@@ -286,12 +408,31 @@ From another host or the router:
 
 ## Common Pitfalls
 
-- **Forgot `--tags networking`** → the networking roles never run; the host
-  stays on ifupdown.
+- **Only ran `site.yml` once on a fresh host** → some `kvm`-role tasks depend
+  on state that same run just created and show as skipped/incomplete rather
+  than converged. Run it twice on first convergence (see Phase 2).
+- **Skipped Phase 2.5, or rebooted/renewed and then didn't wait for it** →
+  dnsmasq still resolves the *old* hostname (or nothing). Without a manual
+  reboot/renewal, dhclient won't re-send the new hostname until the DHCP
+  server's own lease interval elapses — commonly up to 24 hours — so this is
+  the most common way the host looks broken when it isn't.
+- **Personal account has an active session during Phase 2** → the account
+  deletion task in `identity` uses no `force:`, so it fails loudly (not
+  silently) if the installer's personal user still has a live session or
+  owned process. Log out of that account/close its sessions before running
+  `site.yml`.
+- **Forgot `--tags networking`** → the (optional, deferred) networking roles
+  never run; the host stays on plain DHCP, which is the expected MVP state.
 - **Applied networking without console/OOB access** → an unexpected IP move can
-  lock you out until the dead-man timer rolls back.
-- **`system_hostname` changed but inventory `ansible_host` not updated** →
-  re-runs after Phase 2 fail to connect under the old name.
+  lock you out until the dead-man timer rolls back. Extra caution warranted
+  since this path is unvalidated on real hardware.
+- **Dropped `-e ansible_host=<bootstrap-fqdn>` before Phase 2.5** → any
+  command run without the override between the first Phase 2 apply and the
+  Phase 2.5 DNS checkpoint fails to connect, since inventory's `ansible_host`
+  (the permanent FQDN) doesn't resolve yet.
+- **Kept using `-e ansible_host=<bootstrap-fqdn>` after Phase 2.5** →
+  harmless (still reaches the host via its old name, if that DNS entry is
+  still around), but unnecessary — drop it once the permanent name resolves.
 - **`virsh` still asks for sudo** → the admin user has not re-logged in since the
   `kvm` role added group membership.
 - **Cleanup on a host with other valid networkd configs** →
