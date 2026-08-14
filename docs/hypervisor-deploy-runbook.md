@@ -14,6 +14,7 @@ the acceptance test for DHCP-only DNS (dnsmasq-provided hostname resolution).
 This runbook drives the existing guides rather than restating them:
 
 - `docs/hypervisor-bootstrap.md` — manual bootstrap (Phase 0)
+- `docs/cloud-init-bootstrap-sop.md` — cloud-init USB media prep detail (Phase 0)
 - `docs/ansible-inventory.md` — private inventory format (Phase 1)
 - `docs/hypervisor-networking-deploy.md` — networking role workflow (Phase 3)
 - `docs/hypervisor-virtualization-deploy.md` — KVM role workflow (Phase 2)
@@ -75,8 +76,11 @@ All Ansible commands run from the `ansible/` directory.
 Follow `docs/hypervisor-bootstrap.md`. In brief:
 
 1. Install minimal Debian with DHCP networking.
-2. Prepare the `CIDATA` USB: a FAT filesystem labelled `CIDATA` containing
-   **both** `cloud-init/user-data` and `cloud-init/meta-data` at its root.
+2. Prepare the `CIDATA` USB: run `cloud-init/write-usb.sh` from a macOS
+   workstation, which formats the drive FAT32 labelled `CIDATA` and copies
+   `cloud-init/user-data` and `cloud-init/meta-data` to its root. See
+   `docs/cloud-init-bootstrap-sop.md` for the full procedure, including
+   `instance-id` handling for reused drives/hosts.
 3. Install `cloud-init`, then reboot with the `CIDATA` USB inserted so it runs.
 
 cloud-init's `meta-data` sets `local-hostname` (currently `hv-01`), so the host
@@ -302,8 +306,9 @@ From another host or the router:
 - `ansible/roles/identity/`, `ansible/roles/baseline/`, `ansible/roles/security/`
 - `ansible/roles/networkd/`, `ansible/roles/hypervisor-networking/`,
   `ansible/roles/kvm/`
-- `cloud-init/user-data`, `cloud-init/meta-data`
+- `cloud-init/user-data`, `cloud-init/meta-data`, `cloud-init/write-usb.sh`
 - `docs/hypervisor-bootstrap.md`
+- `docs/cloud-init-bootstrap-sop.md`
 - `docs/hypervisor-networking-deploy.md`
 - `docs/hypervisor-virtualization-deploy.md`
 - `docs/ansible-inventory.md`

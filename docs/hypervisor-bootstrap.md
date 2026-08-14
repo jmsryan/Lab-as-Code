@@ -72,11 +72,10 @@ This USB drive is used only to install the base operating system.
 
 ### 2. Prepare cloud-init Bootstrap Media
 
-- Format a second USB drive with a FAT filesystem
-- Label the filesystem `CIDATA`
-- Copy the following files to the root of the filesystem:
-  - `user-data`
-  - `meta-data`
+- From a macOS workstation, run `cloud-init/write-usb.sh`
+- Select the target USB drive from the listed external disks and confirm
+- The script formats it FAT32, labels it `CIDATA`, and copies `user-data` and
+  `meta-data` to its root
 
 These files define the **temporary bootstrap configuration** used by cloud-init.
 
@@ -84,6 +83,10 @@ This media provides:
 - initial access configuration
 - temporary identity
 - prerequisites for Ansible connectivity
+
+See `docs/cloud-init-bootstrap-sop.md` for the full procedure, including how
+to make sure a reused drive or host gets a genuinely clean first boot
+(cloud-init's `instance-id` caching).
 
 ---
 
@@ -100,14 +103,30 @@ No additional software or configuration is performed during this step.
 
 ### 4. Install cloud-init
 
+A minimal Debian netinst install does **not** include cloud-init by default —
+it's only preinstalled on Debian's official cloud images (`generic`/
+`genericcloud` variants), not the installer ISO used in Step 1. It must be
+installed manually:
+
 After the OS installation completes:
 
 - Log in locally using the temporary root credentials
 - Install the `cloud-init` package
 - Ensure cloud-init is enabled to run on next boot
 
+```bash
+apt install cloud-init
+systemctl enable cloud-init
+```
+
 This step prepares the system to consume the bootstrap configuration provided
 by the `CIDATA` media.
+
+> Source: [Debian Cloud Images](https://cloud.debian.org/images/cloud/)
+> distinguishes `generic` images ("runs in any environment using cloud-init")
+> from `nocloud` images ("does not run cloud-init") — cloud-init is bundled
+> per-image, not system-wide. It is not part of any base/standard tasksel task
+> ([packages.debian.org/cloud-init](https://packages.debian.org/stable/cloud-init)).
 
 ---
 

@@ -9,6 +9,9 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: users, sudo
+    # default lock_passwd:true locks the account in /etc/shadow; PAM's
+    # account phase then blocks sshd pubkey auth too, not just password auth
+    lock_passwd: false
     ssh_authorized_keys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINNNxBpnr25dNfo6AYBcq59yfVJ+dB8tjOK8VhQi7SSL
 
