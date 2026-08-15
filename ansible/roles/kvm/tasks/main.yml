@@ -108,7 +108,7 @@
   # `virt_net: state=absent` is itself idempotent, but the precheck keeps the
   # role's --check output honest after the network has already been removed.
   ansible.builtin.command: virsh net-info default
-  register: libvirt_default_net
+  register: kvm_libvirt_default_net
   changed_when: false
   failed_when: false
   when:
@@ -120,4 +120,4 @@
     state: absent
   when:
     - kvm_disable_default_network | bool
-    - libvirt_default_net.rc == 0
+    - kvm_libvirt_default_net.rc == 0

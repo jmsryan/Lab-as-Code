@@ -1,0 +1,14 @@
+---
+# ansible-lint configuration.
+#
+# Discovered when ansible-lint is run from the `ansible/` directory, which is
+# where all commands in this repo are run from (see CLAUDE.md).
+
+skip_list:
+  # role-name requires ^[a-z][a-z0-9_]*$, which `hypervisor-networking` fails
+  # on its hyphen. Ansible itself loads hyphenated role names fine — this is a
+  # naming convention, not a functional constraint. Renaming would churn
+  # site.yml, tests/test-hypervisor-networking-rollback.yml, CLAUDE.md and
+  # several docs, all to satisfy a cosmetic rule, so the rule is skipped
+  # instead. Revisit if the role is ever renamed for other reasons.
+  - role-name

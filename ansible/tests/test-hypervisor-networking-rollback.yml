@@ -69,7 +69,8 @@
       register: systemd_run_path
       changed_when: false
 
-    - name: Check no stale rollback timer is active
+    - name: Check no stale rollback timer is active # noqa: command-instead-of-module
+      # Transient systemd-run unit; may not exist. See roles/hypervisor-networking.
       ansible.builtin.shell: >
         systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null
         || echo inactive
@@ -100,7 +101,7 @@
             executable: /bin/bash
           changed_when: true
 
-        - name: Assert timer is active after arming
+        - name: Assert timer is active after arming # noqa: command-instead-of-module
           ansible.builtin.shell: >
             systemctl is-active networkd-hypervisor-rollback.timer
           args:
@@ -109,14 +110,14 @@
           changed_when: false
           failed_when: (timer_armed_state.stdout | trim) != "active"
 
-        - name: Cancel timer
+        - name: Cancel timer # noqa: command-instead-of-module
           ansible.builtin.shell: >
             systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
           args:
             executable: /bin/bash
           changed_when: true
 
-        - name: Assert timer is no longer active after cancellation
+        - name: Assert timer is no longer active after cancellation # noqa: command-instead-of-module
           ansible.builtin.shell: >
             systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null
             || echo inactive
@@ -194,7 +195,7 @@
       changed_when: true
       tags: [never, live-fire]
 
-    - name: Confirm timer armed
+    - name: Confirm timer armed # noqa: command-instead-of-module
       ansible.builtin.shell: >
         systemctl is-active networkd-hypervisor-rollback.timer
       args:
@@ -239,7 +240,7 @@
       tags: [never, live-fire]
 
     - name: Assert default route is present after rollback
-      ansible.builtin.shell: "ip route show default | head -n 1"
+      ansible.builtin.shell: "set -o pipefail; ip route show default | head -n 1"
       args:
         executable: /bin/bash
       register: post_rollback_route

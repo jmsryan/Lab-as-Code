@@ -3,7 +3,11 @@
 # Verify-and-disarm (re-run after apply)
 # --------------------------------
 
-- name: Check if hypervisor networking rollback timer is armed
+- name: Check if hypervisor networking rollback timer is armed # noqa: command-instead-of-module
+  # The rollback timer is a transient systemd-run unit that usually does not
+  # exist. ansible.builtin.systemd raises "Could not find the requested
+  # service" on a missing unit rather than reporting it inactive, so the
+  # defensive shell form is deliberate, not an oversight.
   ansible.builtin.shell: systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null || echo inactive
   args:
     executable: /bin/bash
@@ -30,7 +34,7 @@
       failed_when: false
 
     - name: Verify VLAN subinterface has an IPv4 address
-      ansible.builtin.shell: "ip -4 -o addr show dev {{ net_bridge_name }}.{{ net_server_vlan }} scope global | awk '{print $4}'"
+      ansible.builtin.shell: "set -o pipefail; ip -4 -o addr show dev {{ net_bridge_name }}.{{ net_server_vlan }} scope global | awk '{print $4}'"
       args:
         executable: /bin/bash
       register: networkd_verify_vlan_ipv4
@@ -38,7 +42,7 @@
       failed_when: false
 
     - name: Verify a default route exists
-      ansible.builtin.shell: "ip route show default | head -n 1"
+      ansible.builtin.shell: "set -o pipefail; ip route show default | head -n 1"
       args:
         executable: /bin/bash
       register: networkd_verify_default_route
@@ -64,7 +68,10 @@
         success_msg: >
           Network state verified healthy. Disarming rollback timer.
 
-    - name: Disarm hypervisor networking rollback timer
+    - name: Disarm hypervisor networking rollback timer # noqa: command-instead-of-module
+      # Transient systemd-run unit that may not exist; ansible.builtin.systemd
+      # errors on a missing unit instead of no-op'ing. See the note on the
+      # armed-check task above.
       ansible.builtin.shell: systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
       args:
         executable: /bin/bash
@@ -272,7 +279,9 @@
       - "Staged: {{ networkd_paths.phys_network }}"
       - "Apply is {{ 'enabled' if (hypervisor_networking_apply | bool) else 'disabled' }}."
 
-- name: Stop any existing hypervisor networking rollback timer
+- name: Stop any existing hypervisor networking rollback timer # noqa: command-instead-of-module
+  # Transient systemd-run unit that may not exist; ansible.builtin.systemd
+  # errors on a missing unit instead of no-op'ing.
   ansible.builtin.shell: systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
   args:
     executable: /bin/bash

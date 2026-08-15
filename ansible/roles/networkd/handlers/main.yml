@@ -11,20 +11,20 @@
 
 - name: Remove staged static networkd unit for primary NIC
   ansible.builtin.file:
-    path: "/etc/systemd/network/10-{{ net_primary_iface }}.network"
+    path: "/etc/systemd/network/10-{{ networkd_primary_iface }}.network"
     state: absent
   tags:
     - risky
 
 - name: Write minimal DHCP networkd unit for primary NIC
   ansible.builtin.copy:
-    dest: "/etc/systemd/network/05-{{ net_primary_iface }}-dhcp.network"
+    dest: "/etc/systemd/network/05-{{ networkd_primary_iface }}-dhcp.network"
     owner: root
     group: root
     mode: "0644"
     content: |
       [Match]
-      Name={{ net_primary_iface }}
+      Name={{ networkd_primary_iface }}
 
       [Network]
       DHCP=yes

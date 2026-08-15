@@ -33,7 +33,7 @@
     - /lib/systemd/system/NetworkManager.service
     - /usr/lib/systemd/system/NetworkManager.service
     - /etc/systemd/system/NetworkManager.service
-  register: nm_unit_stats
+  register: networkd_nm_unit_stats
   failed_when: false
   tags:
     - detect
@@ -45,7 +45,7 @@
     - /lib/systemd/system/networking.service
     - /usr/lib/systemd/system/networking.service
     - /etc/systemd/system/networking.service
-  register: ifupdown_unit_stats
+  register: networkd_ifupdown_unit_stats
   failed_when: false
   tags:
     - detect
@@ -53,7 +53,7 @@
 - name: Check systemd-networkd service state
   ansible.builtin.systemd:
     name: systemd-networkd
-  register: systemd_networkd_service
+  register: networkd_systemd_networkd_service
   failed_when: false
   changed_when: false
   tags:
@@ -62,7 +62,7 @@
 - name: Check networking (ifupdown) service state
   ansible.builtin.systemd:
     name: networking
-  register: ifupdown_service
+  register: networkd_ifupdown_service
   failed_when: false
   changed_when: false
   tags:
@@ -71,7 +71,7 @@
 - name: Check NetworkManager service state
   ansible.builtin.systemd:
     name: NetworkManager
-  register: networkmanager_service
+  register: networkd_networkmanager_service
   failed_when: false
   changed_when: false
   tags:
@@ -79,22 +79,22 @@
 
 - name: Set detected network tooling facts
   ansible.builtin.set_fact:
-    net_tools:
+    networkd_tools:
       systemd_networkd_unit_present: "{{ (networkd_unit_stats.results | selectattr('stat.exists') | list | length) > 0 }}"
-      networkmanager_unit_present: "{{ (nm_unit_stats.results | selectattr('stat.exists') | list | length) > 0 }}"
-      networking_unit_present: "{{ (ifupdown_unit_stats.results | selectattr('stat.exists') | list | length) > 0 }}"
+      networkmanager_unit_present: "{{ (networkd_nm_unit_stats.results | selectattr('stat.exists') | list | length) > 0 }}"
+      networking_unit_present: "{{ (networkd_ifupdown_unit_stats.results | selectattr('stat.exists') | list | length) > 0 }}"
       ifupdown2_installed: "{{ 'ifupdown2' in ansible_facts.packages }}"
       netplan_installed: "{{ 'netplan.io' in ansible_facts.packages }}"
       networkmanager_installed: "{{ 'network-manager' in ansible_facts.packages or 'NetworkManager' in ansible_facts.packages }}"
       systemd_installed: "{{ 'systemd' in ansible_facts.packages }}"
-      systemd_networkd_active: "{{ systemd_networkd_service.status.ActiveState | default('unknown') }}"
-      networking_active: "{{ ifupdown_service.status.ActiveState | default('unknown') }}"
-      networkmanager_active: "{{ networkmanager_service.status.ActiveState | default('unknown') }}"
+      systemd_networkd_active: "{{ networkd_systemd_networkd_service.status.ActiveState | default('unknown') }}"
+      networking_active: "{{ networkd_ifupdown_service.status.ActiveState | default('unknown') }}"
+      networkmanager_active: "{{ networkd_networkmanager_service.status.ActiveState | default('unknown') }}"
   tags:
     - detect
 
 - name: Display detected network tooling
   ansible.builtin.debug:
-    var: net_tools
+    var: networkd_tools
   tags:
     - detect
