@@ -203,12 +203,45 @@
     mode: "0700"
     content: |
       #!/bin/bash
-      set -euo pipefail
-      systemctl stop systemd-networkd || true
-      rm -rf /etc/systemd/network
-      mkdir -p /etc/systemd/network
-      tar -C /etc/systemd -xf /etc/systemd/network.hypervisor-rollback.tar
-      systemctl start systemd-networkd
+      # Dead-man switch: restore the pre-bridge network stack.
+      #
+      # Deliberately not `set -e`. Every step is best-effort because the job is
+      # to get the host reachable again; a failure in one step must not skip
+      # the rest.
+      set -uo pipefail
+
+      ARCHIVE=/etc/systemd/network.hypervisor-rollback.tar
+      STATE=/etc/systemd/network.legacy-stack
+
+      # Only destroy the live config once the archive is known to be readable.
+      # Deleting first and finding the archive missing afterwards leaves the
+      # host with no configuration at all.
+      if tar -tf "$ARCHIVE" >/dev/null 2>&1; then
+        systemctl stop systemd-networkd 2>/dev/null || true
+        rm -rf /etc/systemd/network
+        mkdir -p /etc/systemd/network
+        tar -C /etc/systemd -xf "$ARCHIVE" || true
+      fi
+
+      # Undo the handoff, or ifupdown cannot take the NIC back: networkd's
+      # handoff.yml disables networking.service and masks ifup@.service, and
+      # restoring config files alone would leave nothing able to raise the
+      # interface.
+      systemctl disable --now systemd-networkd 2>/dev/null || true
+
+      if [ -r "$STATE" ]; then
+        while read -r entry; do
+          [ -z "$entry" ] && continue
+          case "$entry" in
+            unmask-ifup) systemctl unmask 'ifup@.service' 2>/dev/null || true ;;
+            *)           systemctl enable --now "$entry" 2>/dev/null || true ;;
+          esac
+        done < "$STATE"
+      else
+        # No state file means the handoff never ran; restart networkd on the
+        # restored config.
+        systemctl start systemd-networkd 2>/dev/null || true
+      fi
 
 - name: Stage bridge netdev
   ansible.builtin.template:
@@ -302,6 +335,21 @@
   args:
     executable: /bin/bash
   changed_when: true
+  when:
+    - hypervisor_networking_apply | bool
+    - hypervisor_networking_changed | bool
+  tags:
+    - risky
+
+- name: Take ownership from the legacy network stack
+  # The single cutover. The bridge config is staged, the archive and rollback
+  # script are in place, and the dead-man switch is armed — so this is the
+  # moment ifupdown/dhcpcd can be dismantled. Importing networkd's handoff
+  # rather than letting networkd apply on its own is what keeps this to one
+  # connection-breaking step instead of two.
+  ansible.builtin.import_role:
+    name: networkd
+    tasks_from: handoff.yml
   when:
     - hypervisor_networking_apply | bool
     - hypervisor_networking_changed | bool

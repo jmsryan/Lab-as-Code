@@ -1,0 +1,37 @@
+---
+# networkd role defaults
+#
+# Scope: take ownership of host networking away from whatever manages it today
+# (ifupdown + dhcpcd, NetworkManager) and give it to systemd-networkd.
+#
+# The role is deliberately config-agnostic. It applies whatever is staged in
+# /etc/systemd/network, which lets it work two ways:
+#
+#   standalone  — it stages a DHCP unit for the default-route NIC itself.
+#                 Right for an ordinary server whose only requirement is
+#                 "keep DHCP working after the migration".
+#
+#   supplied    — another role stages the config and calls tasks/handoff.yml
+#                 at the moment of cutover. This is how hypervisor-networking
+#                 gets a VLAN-aware bridge without a second cutover.
+#
+# See docs/hypervisor-networking.md for the hypervisor case.
+
+# Stage a DHCP .network for the default-route interface.
+# Set false when a caller supplies its own config, so this role does not write
+# a unit that competes with it. A .network file matching the same interface
+# with a lower numeric prefix wins, which is exactly how the previous version
+# of this role fought the bridge config it was supposed to precede.
+networkd_stage_primary: true
+
+# Gate on the connection-breaking step.
+#
+# Staging is always safe: nothing is stopped, started, masked, or restarted
+# unless this is true. Mirrors hypervisor_networking_apply so both roles read
+# the same way. `--tags networking` alone stages and stops.
+networkd_apply: false
+
+# Seconds before the dead-man switch fires and restores the previous stack.
+# Must outlast finding the host's new address and reconnecting to it, since
+# the address can change when the interface topology does.
+networkd_rollback_window: 600

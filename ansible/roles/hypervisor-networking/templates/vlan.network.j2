@@ -5,4 +5,9 @@ Name={{ net_bridge_name }}.{{ net_server_vlan }}
 
 [Network]
 DHCP=ipv4
-IPv6AcceptRA=yes
+# IPv6 router advertisements are declined until the firewall covers v6.
+# Accepting them gives the host a routable IPv6 address, and the security
+# role's own defaults note that SSH hardening alone is insufficient once that
+# happens — see the TODO at the top of roles/security/defaults/main.yml.
+# Flip to yes in the same change that adds v6 firewall rules.
+IPv6AcceptRA=no

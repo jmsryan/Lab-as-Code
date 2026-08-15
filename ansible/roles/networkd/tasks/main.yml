@@ -1,173 +1,85 @@
 ---
-- name: Detect installed networking tools and minimal facts
-  ansible.builtin.import_tasks: detect.yml
+# Migrate a host from its legacy network stack to systemd-networkd.
+#
+# Staging is unconditional and safe. Nothing is stopped, started, masked, or
+# restarted unless networkd_apply is true — see defaults/main.yml.
 
-# --------------------------------
-# Preflight guardrails
-# --------------------------------
+- name: Gather network facts
+  # Only the network subset. The previous version also pulled hardware,
+  # virtual, and the entire package database to populate facts nothing read.
+  ansible.builtin.setup:
+    gather_subset:
+      - network
 
-- name: Assert default IPv4 interface is known
+- name: Assert a default IPv4 route exists
   ansible.builtin.assert:
     that:
       - ansible_default_ipv4 is defined
       - ansible_default_ipv4.interface is defined
-      - ansible_default_ipv4.address is defined
-      - ansible_default_ipv4.gateway is defined
-    fail_msg: >
-      Unable to determine default IPv4 interface or gateway.
-      Refusing to proceed with systemd-networkd changes.
-    success_msg: >
-      Default IPv4 interface identified as {{ ansible_default_ipv4.interface }}.
+    fail_msg: >-
+      No default IPv4 route, so the primary interface cannot be identified.
+      Refusing to migrate networking.
 
-- name: Check NetworkManager service state
-  ansible.builtin.systemd:
-    name: NetworkManager
-  register: networkd_nm_service
-  failed_when: false
-  changed_when: false
-
-- name: Assert NetworkManager is not active
-  ansible.builtin.assert:
-    that:
-      - networkd_nm_service.status.ActiveState is not defined
-        or networkd_nm_service.status.ActiveState != "active"
-    fail_msg: >
-      NetworkManager is running.
-      Refusing to proceed with systemd-networkd takeover.
-    success_msg: >
-      NetworkManager is not active.
-
-- name: Check ifupdown networking service state
-  ansible.builtin.systemd:
-    name: networking
-  register: networkd_ifupdown_service
-  failed_when: false
-  changed_when: false
-
-- name: Assert ifupdown networking service is not active
-  ansible.builtin.assert:
-    that:
-      - networkd_ifupdown_service.status.ActiveState is not defined
-        or networkd_ifupdown_service.status.ActiveState != "active"
-        or networkd_ifupdown_service.status.SubState == "exited"
-    fail_msg: >
-      ifupdown networking service is active.
-      ActiveState={{ networkd_ifupdown_service.status.ActiveState | default('unknown') }},
-      SubState={{ networkd_ifupdown_service.status.SubState | default('unknown') }}.
-      Refusing to proceed with systemd-networkd takeover.
-    success_msg: >
-      ifupdown networking service is not active.
-
-- name: Assert systemd-networkd unit exists
-  ansible.builtin.assert:
-    that:
-      - networkd_tools.systemd_networkd_unit_present | bool
-    fail_msg: >
-      systemd-networkd unit not found on this host.
-      Install systemd-networkd before proceeding.
-
-- name: Set primary interface facts
+- name: Set primary interface
+  # Resolved before the short-circuit below, so the fact is defined even on a
+  # host that is already on networkd — hypervisor-networking imports
+  # handoff.yml, which needs it, after this role may have ended early.
   ansible.builtin.set_fact:
     networkd_primary_iface: "{{ ansible_default_ipv4.interface }}"
 
-# --------------------------------
-# Short-circuit if networkd already owns the host
-# --------------------------------
-
-- name: Check if systemd-networkd manages the primary interface
-  ansible.builtin.shell: "set -o pipefail; networkctl status {{ networkd_primary_iface }} 2>/dev/null | grep -q 'Managed: yes' && echo true || echo false"
-  args:
-    executable: /bin/bash
-  register: networkd_manages_primary
-  changed_when: false
-  failed_when: false
-
-- name: Check for existing networkd config for primary interface
-  ansible.builtin.find:
-    paths: /etc/systemd/network
-    patterns: "*{{ networkd_primary_iface }}*.network"
-  register: networkd_iface_configs
-  failed_when: false
-
-- name: Set networkd ownership fact
-  ansible.builtin.set_fact:
-    networkd_already_controlling: >-
-      {{
-        networkd_tools.systemd_networkd_active == 'active'
-        or (networkd_manages_primary.stdout | trim) == 'true'
-      }}
-
-- name: Skip changes when systemd-networkd already controls the host
-  ansible.builtin.debug:
-    msg: >
-      systemd-networkd appears to be in charge of networking on this host.
-      Skipping all remaining tasks in this role.
-  when: networkd_already_controlling
-
-- name: End role processing when networkd already controls the host
-  ansible.builtin.meta: end_role
-  when: networkd_already_controlling
-
-# --------------------------------
-# Capture current topology
-# --------------------------------
-
-- name: Capture current IP addressing
-  ansible.builtin.command: ip addr show
-  register: networkd_ip_addr_output
-  changed_when: false
-
-- name: Capture current routing table
-  ansible.builtin.command: ip route show
-  register: networkd_ip_route_output
-  changed_when: false
-
-- name: Display current network state
-  ansible.builtin.debug:
-    msg:
-      - "=== ip addr ==="
-      - "{{ networkd_ip_addr_output.stdout_lines }}"
-      - "=== ip route ==="
-      - "{{ networkd_ip_route_output.stdout_lines }}"
-
-- name: Read primary interface type
-  ansible.builtin.command: "cat /sys/class/net/{{ networkd_primary_iface }}/type"
-  register: networkd_primary_iface_type
-  changed_when: false
-
-- name: Check if primary interface is a bridge
+- name: Check systemd-networkd unit is installed
   ansible.builtin.stat:
-    path: "/sys/class/net/{{ networkd_primary_iface }}/bridge"
-  register: networkd_primary_iface_bridge
+    path: /usr/lib/systemd/system/systemd-networkd.service
+  register: networkd_unit
 
-- name: Check if primary interface is a bond
-  ansible.builtin.stat:
-    path: "/sys/class/net/{{ networkd_primary_iface }}/bonding"
-  register: networkd_primary_iface_bond
-
-- name: Check if primary interface is a VLAN
-  ansible.builtin.stat:
-    path: "/proc/net/vlan/{{ networkd_primary_iface }}"
-  register: networkd_primary_iface_vlan
-
-- name: Assert primary interface is a physical NIC
+- name: Assert systemd-networkd is available
   ansible.builtin.assert:
     that:
-      - networkd_primary_iface_type.stdout | trim == "1"
-      - not networkd_primary_iface_bridge.stat.exists
-      - not networkd_primary_iface_bond.stat.exists
-      - not networkd_primary_iface_vlan.stat.exists
-    fail_msg: >
-      Default IPv4 interface {{ networkd_primary_iface }} does not appear to be a physical NIC.
-      type={{ networkd_primary_iface_type.stdout | trim }},
-      bridge={{ networkd_primary_iface_bridge.stat.exists }},
-      bond={{ networkd_primary_iface_bond.stat.exists }},
-      vlan={{ networkd_primary_iface_vlan.stat.exists }}.
-      Refusing to proceed.
+      - networkd_unit.stat.exists
+    fail_msg: >-
+      systemd-networkd unit not found. Install it before running this role.
 
-# --------------------------------
-# Stage systemd-networkd config
-# --------------------------------
+- name: Check systemd-networkd service state
+  ansible.builtin.systemd:
+    name: systemd-networkd
+  register: networkd_service_state
+  changed_when: false
+  failed_when: false
+
+- name: Determine whether systemd-networkd already owns the host
+  ansible.builtin.set_fact:
+    networkd_already_controlling: >-
+      {{ (networkd_service_state.status.ActiveState | default('unknown')) == 'active' }}
+
+- name: Report that migration is unnecessary
+  ansible.builtin.debug:
+    msg: systemd-networkd is already active. Nothing to migrate.
+  when: networkd_already_controlling | bool
+
+- name: End role when systemd-networkd already owns the host
+  ansible.builtin.meta: end_role
+  when: networkd_already_controlling | bool
+
+- name: Check primary interface is not a bridge, bond, or VLAN
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "/sys/class/net/{{ networkd_primary_iface }}/bridge"
+    - "/sys/class/net/{{ networkd_primary_iface }}/bonding"
+    - "/proc/net/vlan/{{ networkd_primary_iface }}"
+  register: networkd_primary_iface_kind
+  loop_control:
+    label: "{{ item }}"
+
+- name: Assert primary interface is a physical NIC
+  # Migrating while the default route already runs over a bridge or bond means
+  # tearing down the thing carrying the connection this runs over.
+  ansible.builtin.assert:
+    that:
+      - (networkd_primary_iface_kind.results | selectattr('stat.exists') | list | length) == 0
+    fail_msg: >-
+      {{ networkd_primary_iface }} is a bridge, bond, or VLAN, not a physical
+      NIC. Refusing to proceed.
 
 - name: Ensure /etc/systemd/network exists
   ansible.builtin.file:
@@ -177,202 +89,149 @@
     group: root
     mode: "0755"
 
-- name: Stage primary interface networkd unit
+- name: Stage DHCP unit for the primary interface
+  # Skipped when a caller supplies its own config (networkd_stage_primary:
+  # false), so this role never writes a unit that competes with it.
   ansible.builtin.template:
     src: primary.network.j2
     dest: "/etc/systemd/network/10-{{ networkd_primary_iface }}.network"
     owner: root
     group: root
     mode: "0644"
-  register: networkd_template_result
+  when: networkd_stage_primary | bool
 
-- name: Set networkd config change fact
-  ansible.builtin.set_fact:
-    networkd_config_changed: "{{ networkd_template_result.changed | default(false) }}"
-
-- name: Backup /etc/systemd/network before applying networkd config
+- name: Archive /etc/systemd/network for rollback
+  # Unconditional. The previous version only archived when its own template
+  # changed, while the risky phase ran on a broader condition — so the set of
+  # runs that could break networking was larger than the set protected by a
+  # backup.
   ansible.builtin.shell: |
     set -euo pipefail
     tar -C /etc/systemd -cf /etc/systemd/network.networkd-rollback.tar network
   args:
     executable: /bin/bash
   changed_when: true
-  when: networkd_config_changed
 
-- name: Display staged networkd unit path
-  ansible.builtin.debug:
-    msg:
-      - "Staged: /etc/systemd/network/10-{{ networkd_primary_iface }}.network"
-      - "NOTE: systemd-networkd not restarted yet."
+- name: Stage the dead-man rollback script
+  ansible.builtin.copy:
+    dest: /usr/local/sbin/networkd-rollback
+    owner: root
+    group: root
+    mode: "0700"
+    content: |
+      #!/bin/bash
+      # Dead-man switch: restore the pre-migration network stack.
+      #
+      # Deliberately not `set -e`. Every step is best-effort because the job is
+      # to get the host reachable again; a failure in one step must not skip
+      # the rest.
+      set -uo pipefail
 
-# If systemd-networkd is not active, prefer a minimal DHCP config on the
-# current primary NIC before attempting to start/enable it.
-- name: Risky apply phase
-  when:
-    - not networkd_already_controlling
-    - networkd_config_changed or networkd_tools.systemd_networkd_active != "active"
+      ARCHIVE=/etc/systemd/network.networkd-rollback.tar
+      STATE=/etc/systemd/network.legacy-stack
+
+      # Only destroy the live config once the archive is known to be readable.
+      # Deleting first and discovering the archive is missing afterwards leaves
+      # the host with no configuration at all.
+      if tar -tf "$ARCHIVE" >/dev/null 2>&1; then
+        systemctl stop systemd-networkd 2>/dev/null || true
+        rm -rf /etc/systemd/network
+        mkdir -p /etc/systemd/network
+        tar -C /etc/systemd -xf "$ARCHIVE" || true
+      fi
+
+      # Undo the handoff, or the legacy stack cannot take the NIC back.
+      systemctl disable --now systemd-networkd 2>/dev/null || true
+
+      if [ -r "$STATE" ]; then
+        while read -r entry; do
+          [ -z "$entry" ] && continue
+          case "$entry" in
+            unmask-ifup) systemctl unmask 'ifup@.service' 2>/dev/null || true ;;
+            *)           systemctl enable --now "$entry" 2>/dev/null || true ;;
+          esac
+        done < "$STATE"
+      fi
+
+- name: Apply — hand networking to systemd-networkd
+  when: networkd_apply | bool
   tags:
     - risky
   block:
-    - name: Arm minimal DHCP config when systemd-networkd is inactive
-      ansible.builtin.set_fact:
-        _networkd_prepare_dhcp: true
-      when:
-        - networkd_tools.systemd_networkd_active != "active"
-      changed_when: true
-      notify: Stage minimal DHCP networkd unit for primary NIC
-      tags:
-        - risky
-
-    - name: Flush handlers before applying systemd-networkd
-      ansible.builtin.meta: flush_handlers
-      tags:
-        - risky
-
-    # --------------------------------
-    # Rollback safeguard (dead-man switch)
-    # --------------------------------
-
-    - name: Stage networkd rollback script
-      ansible.builtin.copy:
-        dest: /usr/local/sbin/networkd-rollback
-        owner: root
-        group: root
-        mode: "0700"
-        content: |
-          #!/bin/bash
-          set -euo pipefail
-          systemctl stop systemd-networkd || true
-          rm -rf /etc/systemd/network
-          mkdir -p /etc/systemd/network
-          tar -C /etc/systemd -xf /etc/systemd/network.networkd-rollback.tar
-          systemctl start systemd-networkd
-      tags:
-        - risky
-
-    - name: Stop any existing networkd rollback timer # noqa: command-instead-of-module
-      # Transient systemd-run unit that may not exist; ansible.builtin.systemd
-      # errors on a missing unit instead of no-op'ing.
-      ansible.builtin.shell: systemctl stop networkd-rollback.timer 2>/dev/null || true
-      args:
-        executable: /bin/bash
-      failed_when: false
-      changed_when: false
-      tags:
-        - risky
-
-    - name: Arm networkd rollback timer (5 minutes)
+    - name: Arm the dead-man switch
       ansible.builtin.shell: >
-        systemd-run --on-active=300 --unit=networkd-rollback
-        --description="networkd rollback dead-man switch"
+        systemd-run --on-active={{ networkd_rollback_window }}
+        --unit=networkd-rollback
+        --description="networkd migration dead-man switch"
         /usr/local/sbin/networkd-rollback
       args:
         executable: /bin/bash
       changed_when: true
-      tags:
-        - risky
 
-    # --------------------------------
-    # Apply systemd-networkd (risky)
-    # --------------------------------
+    - name: Take ownership from the legacy network stack
+      ansible.builtin.import_tasks: handoff.yml
 
-    - name: Enable and restart systemd-networkd
+    - name: Enable and start systemd-networkd
       ansible.builtin.systemd:
         name: systemd-networkd
         enabled: true
         state: restarted
-      tags:
-        - risky
 
-    - name: Wait briefly for networkd to settle
-      ansible.builtin.pause:
-        seconds: 10
-      tags:
-        - risky
-
-    # --------------------------------
-    # Verify new state locally
-    # --------------------------------
-
-    - name: Verify systemd-networkd is active
-      ansible.builtin.systemd:
-        name: systemd-networkd
-      register: networkd_service
-      failed_when: false
-      changed_when: false
-      tags:
-        - risky
-
-    - name: Check primary interface exists
-      ansible.builtin.command: "ip link show {{ networkd_primary_iface }}"
-      register: networkd_primary_link
-      changed_when: false
-      tags:
-        - risky
-
-    - name: Check IPv4 address on primary interface
-      ansible.builtin.shell: "set -o pipefail; ip -4 -o addr show dev {{ networkd_primary_iface }} scope global | awk '{print $4}'"
+    - name: Wait for the primary interface to acquire an IPv4 address
+      # Polls instead of sleeping a fixed interval, so a fast host is not
+      # penalised and a slow lease is not called a failure prematurely.
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        ip -4 -o addr show dev {{ networkd_primary_iface }} scope global | awk '{print $4}'
       args:
         executable: /bin/bash
-      register: networkd_primary_ipv4
+      register: networkd_post_addr
+      until: (networkd_post_addr.stdout | trim) != ""
+      retries: 20
+      delay: 3
       changed_when: false
-      tags:
-        - risky
+      failed_when: false
 
-    - name: Check default route uses primary interface
+    - name: Check the default route runs over the primary interface
       ansible.builtin.shell: "set -o pipefail; ip route show default | awk '{print $5}'"
       args:
         executable: /bin/bash
-      register: networkd_default_route_iface
+      register: networkd_post_route
       changed_when: false
-      tags:
-        - risky
+      failed_when: false
 
-    - name: Assert networkd is active and default route is intact
+    - name: Assert networking is healthy after the handoff
       ansible.builtin.assert:
         that:
-          - networkd_service.status.ActiveState is defined
-          - networkd_service.status.ActiveState == "active"
-          - (networkd_primary_ipv4.stdout | trim) != ""
-          - (networkd_default_route_iface.stdout | trim) == networkd_primary_iface
-        fail_msg: >
-          Post-apply verification failed.
-          systemd-networkd ActiveState: {{ networkd_service.status.ActiveState | default('unknown') }}
-          Primary IPv4: '{{ networkd_primary_ipv4.stdout | trim }}'
-          Default route iface: '{{ networkd_default_route_iface.stdout | trim }}'
-          Leaving rollback armed (job {{ networkd_rollback_job_id }}).
-        success_msg: >
-          Post-apply verification passed. Primary IPv4 '{{ networkd_primary_ipv4.stdout | trim }}'
-          and default route via {{ networkd_primary_iface }}.
-      tags:
-        - risky
+          - (networkd_post_addr.stdout | trim) != ""
+          - (networkd_post_route.stdout | trim) == networkd_primary_iface
+        fail_msg: >-
+          Post-handoff verification failed.
+          IPv4: '{{ networkd_post_addr.stdout | trim }}'
+          Default route interface: '{{ networkd_post_route.stdout | trim }}'
+          The dead-man switch is still armed and will restore the previous
+          stack within {{ networkd_rollback_window }}s. Do not re-run until it
+          has fired and the host is reachable again.
+        success_msg: >-
+          systemd-networkd owns {{ networkd_primary_iface }} with IPv4
+          {{ networkd_post_addr.stdout | trim }}.
 
-    - name: Wait for Ansible SSH connectivity to remain healthy
+    - name: Confirm Ansible can still reach the host
       ansible.builtin.wait_for_connection:
         timeout: 60
-      tags:
-        - risky
 
-    # --------------------------------
-    # Disarm rollback only after success
-    # --------------------------------
-
-    - name: Disarm networkd rollback timer # noqa: command-instead-of-module
-      # Transient systemd-run unit that may not exist; ansible.builtin.systemd
-      # errors on a missing unit instead of no-op'ing.
+    - name: Disarm the dead-man switch # noqa: command-instead-of-module
+      # Transient systemd-run unit; ansible.builtin.systemd errors on a missing
+      # unit instead of no-op'ing.
       ansible.builtin.shell: systemctl stop networkd-rollback.timer 2>/dev/null || true
       args:
         executable: /bin/bash
       changed_when: true
       failed_when: false
-      tags:
-        - risky
 
-    - name: Phase completed successfully
+    - name: Migration committed
       ansible.builtin.debug:
         msg:
-          - "systemd-networkd change committed."
-          - "Rollback timer disarmed."
-          - "Primary interface {{ networkd_primary_iface }} is up with IPv4 {{ networkd_primary_ipv4.stdout | trim }}."
-      tags:
-        - risky
+          - "systemd-networkd now owns networking."
+          - "Dead-man switch disarmed."
+          - "{{ networkd_primary_iface }}: {{ networkd_post_addr.stdout | trim }}"

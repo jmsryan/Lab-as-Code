@@ -1,3 +1,21 @@
 ---
 dependencies:
+  # networkd takes ownership of the host's networking away from ifupdown and
+  # dhcpcd. Two parameters matter here:
+  #
+  #   networkd_stage_primary: false
+  #     This role supplies the config. If networkd also staged its own
+  #     10-<iface>.network it would match the same interface at a lower numeric
+  #     prefix and win over 30-<iface>.network — which is exactly what the
+  #     previous version did, and why its output had to be deleted by this
+  #     role's cleanup before the bridge could work.
+  #
+  #   networkd_apply: false
+  #     There is one cutover, and it belongs to this role, after the bridge
+  #     config is staged. networkd's handoff.yml is imported at that point (see
+  #     tasks/main.yml). Letting networkd apply on its own would restart
+  #     networking twice and leave an intermediate state where systemd-networkd
+  #     and dhcpcd both hold the NIC.
   - role: networkd
+    networkd_stage_primary: false
+    networkd_apply: false

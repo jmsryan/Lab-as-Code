@@ -7,10 +7,16 @@
     - identity
     - baseline
     - security
-    - role: networkd
-      tags:
-        - never
-        - networking
+    # networkd is not listed here. It is a dependency of hypervisor-networking
+    # (roles/hypervisor-networking/meta/main.yml), which passes it
+    # networkd_stage_primary=false and networkd_apply=false so there is exactly
+    # one cutover, owned by hypervisor-networking. Listing it here as well would
+    # invoke it a second time with different parameters — Ansible only
+    # deduplicates a role when its parameters match — and that second run would
+    # stage a 10-<iface>.network that competes with the bridge config.
+    #
+    # Dependencies inherit the parent role's tags, so networkd is still gated
+    # behind never + networking exactly as before.
     - role: hypervisor-networking
       tags:
         - never

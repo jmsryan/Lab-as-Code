@@ -1,13 +1,16 @@
 ---
 # TODO: IPv6 firewall coverage required before this role is considered complete.
 #
-# The hypervisor-networking role configures the server VLAN subinterface with
-# IPv6AcceptRA=yes. The host will acquire a SLAAC address and an IPv6 default
-# route whenever a router on the server VLAN sends RAs. SSH hardening alone is
-# insufficient once the host has a routable IPv6 address.
+# The exposure this describes is currently held closed at the other end: the
+# hypervisor-networking role sets IPv6AcceptRA=no on the server VLAN
+# subinterface, so the host takes no SLAAC address and no IPv6 default route.
+# That is a stopgap, not a fix — it declines connectivity rather than securing
+# it, and it is the only thing standing between this host and a routable IPv6
+# address that SSH hardening alone would not protect.
 #
-# When firewall tasks are added, rules must cover both IPv4 and IPv6.
-# Use nftables inet/ip6 tables or ensure ufw has IPV6=yes with matching rules.
+# When firewall tasks are added, rules must cover both IPv4 and IPv6 — use
+# nftables inet/ip6 tables, or ensure ufw has IPV6=yes with matching rules —
+# and IPv6AcceptRA should be flipped back to yes in the same change.
 
 # Root's console password is the platform's break-glass credential — set by
 # hand at install time (docs/hypervisor-bootstrap.md Step 3) and never
