@@ -1,0 +1,29 @@
+# cloud-init NoCloud seed — network configuration.
+#
+# Disables cloud-init's network configuration entirely.
+#
+# Without this file cloud-init has no datasource network config to use, so it
+# generates a fallback for the primary NIC with BOTH dhcp4 and dhcp6 enabled
+# and renders it to /etc/network/interfaces.d/50-cloud-init as:
+#
+#     iface <nic> inet dhcp
+#     iface <nic> inet6 dhcp
+#
+# Debian 13 ships no DHCPv6 client (isc-dhcp-client was dropped from the
+# release; dhcpcd-base backs ifupdown's IPv4 only). The inet6 stanza therefore
+# fails with "No DHCPv6 client software found!" *after* the IPv4 lease is
+# already bound — ifup exits 1, systemd fails ifup@<nic>.service, and dhcpcd is
+# SIGTERMed, tearing down the address and routes that had just come up. The
+# host boots with no IPv4 connectivity, on every boot.
+#
+# Network state belongs to Ansible (docs/automation-boundaries.md). The Debian
+# installer's own /etc/network/interfaces stanza carries the host until the
+# networkd role takes over.
+#
+# `network: {config: disabled}` is honored from the datasource, not only from
+# /etc/cloud/cloud.cfg.d/: stages.py _find_networking_config() runs
+# is_disabled_cfg() across every entry in network_config_sources, including
+# NetworkConfigSource.DS.
+# https://docs.cloud-init.io/en/latest/reference/network-config.html
+network:
+  config: disabled

@@ -98,6 +98,40 @@ cloud-init **does not**:
 
 ---
 
+### Networking Must Be Explicitly Disabled
+
+"Configure networking topology" being out of scope is not self-enforcing.
+Given no `network-config` in the seed, cloud-init **generates a fallback**
+for the primary NIC and renders it to
+`/etc/network/interfaces.d/50-cloud-init` — silently taking ownership of
+network state that belongs to Ansible.
+
+The fallback enables both address families, emitting an `inet6 dhcp` stanza.
+Debian 13 ships no DHCPv6 client (`isc-dhcp-client` was dropped from the
+release; `dhcpcd-base` backs ifupdown's IPv4 only), so on every boot:
+
+1. DHCPv4 succeeds — address, subnet route, and default route are installed
+2. the `inet6` stanza fails with `No DHCPv6 client software found!`
+3. `ifup` exits 1, so systemd fails `ifup@<nic>.service`
+4. systemd SIGTERMs `dhcpcd`, which **removes the working address and routes**
+
+The host boots with no IPv4 connectivity, and Ansible cannot reach it to
+converge.
+
+`cloud-init/network-config` closes this at the seed, which is the only layer
+that can: the failure lands on first boot, before Ansible has a network to
+arrive over. With the seed in place cloud-init never renders a network
+config, so there is no state for Ansible to correct — and no Ansible task
+enforces this, deliberately. Networking changes in this repo stay gated
+behind `--tags networking`; a remediation task in a default-run role would
+route around that gate to guard a condition that cannot recur.
+
+Hosts seeded before this file existed carry a stale
+`/etc/network/interfaces.d/50-cloud-init` and need a one-time manual
+removal.
+
+---
+
 ## Ansible Boundary
 
 ### Purpose

@@ -9,9 +9,22 @@ users:
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     groups: users, sudo
-    # default lock_passwd:true locks the account in /etc/shadow; PAM's
-    # account phase then blocks sshd pubkey auth too, not just password auth
+    # A locked account (`!` in /etc/shadow) fails PAM's account phase, which
+    # blocks sshd pubkey auth too, not just password auth.
+    #
+    # `lock_passwd: false` on its own does NOT prevent this. cloud-init runs
+    # `useradd` without `-p`, so the account is created with `!` already set,
+    # and distros/__init__.py only calls unlock_passwd() when a password was
+    # *also* supplied — otherwise it just skips the explicit lock and logs
+    # "Not unlocking password for user ... but no 'passwd'/'plain_text_passwd'
+    # /'hashed_passwd' provided in user-data". The account stays locked.
+    #
+    # `hashed_passwd: "*"` satisfies that condition without granting a password
+    # login: `*` is the conventional "no valid password hash" value, and
+    # cloud-init's unlock_passwd (`passwd -u`) leaves `*` intact rather than
+    # blanking it. Net result: key-only auth, account not locked.
     lock_passwd: false
+    hashed_passwd: "*"
     ssh_authorized_keys:
       - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINNNxBpnr25dNfo6AYBcq59yfVJ+dB8tjOK8VhQi7SSL
 
@@ -30,7 +43,13 @@ packages:
   - openssh-server
 
 # ---- Optional but useful ----
-timezone: US/Mountain
+# Canonical IANA zone name. Debian 13 ships only the primary zoneinfo tree;
+# legacy aliases like `US/Mountain` live in the separate `tzdata-legacy`
+# package and resolve to nothing without it, failing cc_timezone with
+# "Invalid timezone US/Mountain, no file found at /usr/share/zoneinfo/...".
+# Keep this in sync with `system_timezone` in the Ansible inventory, which
+# is authoritative (the baseline role re-applies it).
+timezone: America/Denver
 
 # ---- Final signal ----
 final_message: |

@@ -74,8 +74,8 @@ This USB drive is used only to install the base operating system.
 
 - From a macOS workstation, run `cloud-init/write-usb.sh`
 - Select the target USB drive from the listed external disks and confirm
-- The script formats it FAT32, labels it `CIDATA`, and copies `user-data` and
-  `meta-data` to its root
+- The script formats it FAT32, labels it `CIDATA`, and copies `user-data`,
+  `meta-data`, and `network-config` to its root
 
 These files define the **temporary bootstrap configuration** used by cloud-init.
 

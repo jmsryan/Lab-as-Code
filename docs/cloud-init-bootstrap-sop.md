@@ -97,7 +97,11 @@ no `meta-data` edit is needed before running the script.
 
 ## Validation Checklist
 
-- Script output shows both `user-data` and `meta-data` copied.
+- Script output shows `user-data`, `meta-data`, and `network-config` copied.
+  `network-config` disables cloud-init's network configuration; without it
+  cloud-init generates a fallback that breaks IPv4 on every boot. See
+  "Networking Must Be Explicitly Disabled" in
+  `docs/automation-boundaries.md`.
 - Re-inserting the drive on macOS shows a volume named `CIDATA` containing
   exactly those files at its root (`ls /Volumes/CIDATA`).
 - On first boot with this media inserted, `cloud-init status --wait` on the
@@ -138,6 +142,6 @@ no `meta-data` edit is needed before running the script.
 ## Related Files
 
 - `cloud-init/write-usb.sh`
-- `cloud-init/user-data`, `cloud-init/meta-data`
+- `cloud-init/user-data`, `cloud-init/meta-data`, `cloud-init/network-config`
 - `docs/hypervisor-bootstrap.md` (Step 2 references this SOP)
 - `docs/hypervisor-deploy-runbook.md` (Phase 0 references this SOP)
