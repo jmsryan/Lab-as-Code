@@ -144,6 +144,11 @@
       systemctl disable --now systemd-networkd 2>/dev/null || true
 
       if [ -r "$STATE" ]; then
+        # networking.service raises allow-hotplug interfaces only from its
+        # second ExecStart, which is conditional on this marker. Its own
+        # ExecStopPost creates it, but /run is tmpfs — a reboot between the
+        # handoff and this rollback would clear it.
+        touch /run/network/restart-hotplug 2>/dev/null || true
         while read -r entry; do
           [ -z "$entry" ] && continue
           case "$entry" in
@@ -152,6 +157,11 @@
           esac
         done < "$STATE"
       fi
+
+      # `ifup -a` processes only interfaces marked `auto`, and the primary NIC
+      # is allow-hotplug. udev will not re-fire for a device that is already
+      # present, so raise it explicitly rather than trust the marker above.
+      ifup --force {{ networkd_primary_iface }} 2>/dev/null || true
 
 - name: Apply — hand networking to systemd-networkd
   when: networkd_apply | bool
