@@ -28,8 +28,11 @@ ansible-playbook site.yml --check
 # Full playbook run
 ansible-playbook site.yml
 
-# Run a single role
-ansible-playbook site.yml --tags identity
+# Run only the kvm role. Ansible does NOT auto-tag roles by name, and only
+# kvm (and the two networking roles) carry tags in site.yml — identity,
+# baseline, and security are untagged and cannot be selected individually.
+# A --tags value matching nothing exits 0 with an empty PLAY RECAP.
+ansible-playbook site.yml --tags kvm
 
 # Stage networking config only (safe, no restart)
 ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=false
