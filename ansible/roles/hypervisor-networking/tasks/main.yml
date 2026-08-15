@@ -261,7 +261,6 @@
     group: root
     mode: "0644"
   register: bridge_netdev_result
-  notify: Apply networkd changes now
 
 - name: Stage bridge network
   ansible.builtin.template:
@@ -271,7 +270,6 @@
     group: root
     mode: "0644"
   register: bridge_network_result
-  notify: Apply networkd changes now
 
 - name: Stage server VLAN netdev
   ansible.builtin.template:
@@ -281,7 +279,6 @@
     group: root
     mode: "0644"
   register: vlan_netdev_result
-  notify: Apply networkd changes now
 
 - name: Stage server VLAN network (DHCP on VLAN subif)
   ansible.builtin.template:
@@ -291,7 +288,6 @@
     group: root
     mode: "0644"
   register: vlan_network_result
-  notify: Apply networkd changes now
 
 - name: Stage physical NIC network (enslave to bridge)
   ansible.builtin.template:
@@ -301,7 +297,6 @@
     group: root
     mode: "0644"
   register: phys_network_result
-  notify: Apply networkd changes now
 
 - name: Set hypervisor networking change fact
   ansible.builtin.set_fact:
@@ -311,6 +306,34 @@
          or vlan_netdev_result.changed
          or vlan_network_result.changed
          or phys_network_result.changed }}
+
+- name: Check whether the bridge already exists
+  ansible.builtin.stat:
+    path: "/sys/class/net/{{ net_bridge_name }}"
+  register: hypervisor_networking_bridge
+
+- name: Check systemd-networkd state for the cutover decision
+  ansible.builtin.systemd:
+    name: systemd-networkd
+  register: hypervisor_networking_networkd
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether the cutover still has to happen
+  # Gating the cutover on "a template changed in this run" is a trap: staging
+  # first (runbook Phase 3 step 1) consumes the change, so the later apply run
+  # finds every file already correct, reports ok, and skips the entire cutover
+  # with a green recap. The two-phase workflow could never complete that way.
+  #
+  # Decide from actual system state instead — the host has not been migrated
+  # while systemd-networkd is inactive or the bridge does not exist — and keep
+  # the changed check as well, so editing VLANs on an already-migrated host
+  # still restarts networkd to pick them up.
+  ansible.builtin.set_fact:
+    hypervisor_networking_apply_needed: >-
+      {{ (hypervisor_networking_networkd.status.ActiveState | default('unknown')) != 'active'
+         or not hypervisor_networking_bridge.stat.exists
+         or hypervisor_networking_changed | bool }}
 
 - name: Display staged networkd paths
   ansible.builtin.debug:
@@ -332,7 +355,7 @@
   failed_when: false
   when:
     - hypervisor_networking_apply | bool
-    - hypervisor_networking_changed | bool
+    - hypervisor_networking_apply_needed | bool
   tags:
     - risky
 
@@ -347,7 +370,7 @@
   changed_when: true
   when:
     - hypervisor_networking_apply | bool
-    - hypervisor_networking_changed | bool
+    - hypervisor_networking_apply_needed | bool
   tags:
     - risky
 
@@ -362,14 +385,48 @@
     tasks_from: handoff.yml
   when:
     - hypervisor_networking_apply | bool
-    - hypervisor_networking_changed | bool
+    - hypervisor_networking_apply_needed | bool
   tags:
     - risky
 
-- name: Flush networkd handlers now
-  ansible.builtin.meta: flush_handlers
+- name: Start systemd-networkd on the new configuration
+  # Inline rather than notified. A handler only runs when the notifying task
+  # reported `changed`, which is the same trap the apply gate had: after a
+  # staging run the templates are already correct, so nothing notifies and the
+  # restart silently never happens. The cutover must not depend on whether a
+  # file was rewritten in this particular run.
+  #
+  # async/poll:0 because this severs the connection Ansible is running over —
+  # the host is moving its address to the VLAN subinterface, so there is no
+  # reply to wait for.
+  ansible.builtin.systemd:
+    name: systemd-networkd
+    enabled: true
+    state: restarted
+  async: 45
+  poll: 0
   when:
     - hypervisor_networking_apply | bool
-    - hypervisor_networking_changed | bool
+    - hypervisor_networking_apply_needed | bool
+  tags:
+    - risky
+
+- name: Report that a reconnect is required
+  ansible.builtin.debug:
+    msg: >-
+      Networking is being cut over on {{ inventory_hostname }}. The host's
+      address may change. Reconnect, then re-run with --tags networking to
+      verify and disarm the rollback timer before it fires.
+  when:
+    - hypervisor_networking_apply | bool
+    - hypervisor_networking_apply_needed | bool
+  tags:
+    - risky
+
+- name: End play after the cutover
+  ansible.builtin.meta: end_play
+  when:
+    - hypervisor_networking_apply | bool
+    - hypervisor_networking_apply_needed | bool
   tags:
     - risky
