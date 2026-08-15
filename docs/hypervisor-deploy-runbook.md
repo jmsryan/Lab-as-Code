@@ -104,6 +104,11 @@ Follow `docs/hypervisor-bootstrap.md`. In brief:
    `docs/cloud-init-bootstrap-sop.md` for the full procedure, including
    `instance-id` handling for reused drives/hosts.
 3. Install `cloud-init`, then reboot with the `CIDATA` USB inserted so it runs.
+4. **Reboot a second time**, once cloud-init reports `done`. It installs
+   `packages:` during the previous boot, after systemd would have activated
+   them — leaving `dbus` installed but inactive, which makes `hostnamectl`
+   fail and aborts the `identity` role's first task. See
+   `docs/hypervisor-bootstrap.md` Step 5a.
 
 cloud-init's `meta-data` sets `local-hostname` (currently `hv-01`), so the host
 advertises that name via DHCP and dnsmasq registers it — the host is reachable
@@ -116,6 +121,9 @@ by name immediately, before any Ansible run.
   automation SSH key.
 - On the host, `hostname` shows that same bootstrap name — the `identity` role
   has not run yet.
+- `systemctl is-active dbus` returns `active` and `cloud-init status` is
+  `done`, not `error` — proves the second reboot happened and cloud-init
+  finished cleanly.
 
 > If DNS has not propagated yet, the raw DHCP-lease IP is an acceptable fallback
 > for this first connection only. Everything after Phase 1 is name-based.
@@ -413,9 +421,16 @@ From another host or the router:
   than converged. Run it twice on first convergence (see Phase 2).
 - **Skipped Phase 2.5, or rebooted/renewed and then didn't wait for it** →
   dnsmasq still resolves the *old* hostname (or nothing). Without a manual
-  reboot/renewal, dhclient won't re-send the new hostname until the DHCP
-  server's own lease interval elapses — commonly up to 24 hours — so this is
-  the most common way the host looks broken when it isn't.
+  reboot/renewal, the DHCP client won't re-send the new hostname until the
+  DHCP server's own lease interval elapses — commonly up to 24 hours — so this
+  is the most common way the host looks broken when it isn't. On Debian 13
+  that client is `dhcpcd`, so the no-reboot renewal is `dhcpcd -n <iface>`.
+- **Ran `site.yml` without the second post-cloud-init reboot** → the first
+  task (`identity : Set permanent hostname`) fails with `Failed to connect to
+  system scope bus via local transport`. `dbus` was installed by cloud-init
+  after systemd would have started it, so it is inactive. Reboot (Phase 0
+  step 4) and re-run; `systemctl start dbus.socket dbus.service` is an
+  equivalent in-place fix.
 - **Personal account has an active session during Phase 2** → the account
   deletion task in `identity` uses no `force:`, so it fails loudly (not
   silently) if the installer's personal user still has a live session or

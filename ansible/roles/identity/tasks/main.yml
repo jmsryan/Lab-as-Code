@@ -17,6 +17,26 @@
     line: "send host-name = gethostname();"
     insertafter: EOF
   when: identity_dhclient_conf.stat.exists
+- name: Check for dhcpcd configuration
+  ansible.builtin.stat:
+    path: /etc/dhcpcd.conf
+  register: identity_dhcpcd_conf
+- name: Ensure dhcpcd advertises the current hostname via DHCP (option 12)
+  # Debian 13 dropped isc-dhcp-client and ships dhcpcd-base as ifupdown's DHCP
+  # backend, so /etc/dhcp/dhclient.conf does not exist and the task above is a
+  # silent no-op on this platform — the propagation it claims to provide comes
+  # from dhcpcd instead. dhcpcd's packaged default already enables `hostname`,
+  # but Ansible owns this state, so enforce it rather than trust the package
+  # default to survive. Same lease-time caveat as dhclient: a hostname change
+  # is not re-advertised until the client renews, so it needs
+  # `dhcpcd -n <iface>` or a reboot before dnsmasq re-registers it (see
+  # docs/hypervisor-deploy-runbook.md Phase 2.5).
+  ansible.builtin.lineinfile:
+    path: /etc/dhcpcd.conf
+    regexp: '^\s*#?\s*hostname\b.*$'
+    line: "hostname"
+    insertafter: EOF
+  when: identity_dhcpcd_conf.stat.exists
 - name: Ensure automation user exists
   ansible.builtin.user:
     name: svc-ansible

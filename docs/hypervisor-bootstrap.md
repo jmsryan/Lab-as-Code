@@ -153,6 +153,34 @@ the automation user and SSH key defined in `user-data`.
 
 ---
 
+### 5a. Reboot Again Before Running Ansible
+
+Once cloud-init reports `done`, **reboot a second time.**
+
+cloud-init installs `packages:` (including `openssh-server`, which pulls in
+`dbus`) *during* the boot in Step 5 — well after systemd has passed the point
+where it would have activated those units. The result is a running system on
+which `dbus.socket` and `dbus.service` are inactive despite being installed.
+Anything that talks to the system bus then fails:
+
+```
+Failed to connect to system scope bus via local transport: No such file or directory
+```
+
+`hostnamectl` is one of those things, so the `identity` role's very first task
+(`Set permanent hostname`) aborts the play. A second reboot activates every
+unit cloud-init installed and the run proceeds normally.
+
+Verify before continuing:
+
+```bash
+systemctl is-active dbus            # active
+hostnamectl status                  # returns without error
+cloud-init status --long            # done (not error)
+```
+
+---
+
 ### 6. Verify Ansible Readiness
 
 From a separate machine:
