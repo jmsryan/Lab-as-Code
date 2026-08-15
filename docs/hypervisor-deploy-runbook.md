@@ -283,12 +283,19 @@ you're specifically picking that back up.
 > This phase is implemented but has not been validated end-to-end on real
 > hardware. Treat it as a starting point to test carefully, not a proven path.
 
-> **Have console or out-of-band access before starting.** The host IP moves to
-> the server-VLAN subinterface and connectivity may drop mid-play. Two
-> independent dead-man rollback timers cover this:
-> - the `networkd` migration arms a **hardcoded 5-minute** timer;
-> - the `hypervisor-networking` bridge arms a **10-minute** timer
->   (`hypervisor_networking_rollback_window`, default `600`).
+> **Have console or out-of-band access before starting, and confirm you can log
+> in as root on it before you begin.** The host IP moves to the server-VLAN
+> subinterface and connectivity drops mid-play. Root over SSH is blocked
+> unconditionally, so the console password set in Phase 0 is the only way back
+> in if the rollback also fails.
+>
+> One dead-man rollback timer covers this: `hypervisor_networking_rollback_window`,
+> default `600` seconds. There is a single cutover — `hypervisor-networking`
+> stages the bridge config and then imports `networkd`'s `handoff.yml`, so the
+> host goes from ifupdown straight to the bridge with no intermediate state.
+> Everything in steps 3–5 (reconnect, find the new lease, re-run to disarm) has
+> to fit inside that window. Raise it for a first attempt:
+> `-e hypervisor_networking_rollback_window=1200`.
 
 ### 1. Stage (safe — no restart)
 
@@ -297,26 +304,36 @@ cd ansible
 ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=false
 ```
 
-This runs the `networkd` migration — which renders the DHCP-only
-`primary.network.j2` and migrates the primary NIC under its own 5-minute
-rollback — and stages the bridge/VLAN configs without restarting networking.
+This stages the bridge/VLAN/physical-NIC units, archives the current config,
+and writes the rollback script. Nothing is stopped, started, masked, or
+restarted — the cutover is gated on `hypervisor_networking_apply`, not on the
+tag.
 
-Because the freshly bootstrapped host is still on ifupdown/DHCP, the `networkd`
-role does **not** short-circuit and renders the template end-to-end.
+`networkd` runs here as a dependency with `networkd_stage_primary: false`, so
+it deliberately renders **no** unit of its own. A `10-<iface>.network` would
+match the same interface at a lower numeric prefix and win over the bridge's
+`30-<iface>.network`.
 
-**Checkpoint — direct change proof (DHCP-only DNS):** on the host,
-
-```bash
-cat /etc/systemd/network/10-<iface>.network
-```
-
-shows only a `[Match] Name=…` block and `[Network] DHCP=yes` — no `Address=`,
-`Gateway=`, `DNS=`, or `Domains=` lines. Confirm nothing static leaked into the
-primary NIC unit:
+**Checkpoint — the staged set is exactly the approved five, and DHCP-only:**
 
 ```bash
+ls /etc/systemd/network/
+# 10-br0.netdev  20-br0.network  21-br0.<vlan>.netdev
+# 22-br0.<vlan>.network  30-<iface>.network      <- and nothing else
+
 grep -rn 'Address=\|Gateway=\|DNS=\|Domains=' /etc/systemd/network
+# no output — addressing is DHCP-only on the VLAN subinterface
 ```
+
+**Checkpoint — the safety net is real before you rely on it:**
+
+```bash
+ansible-playbook tests/test-hypervisor-networking-rollback.yml
+```
+
+Preflight only, no network disruption. Confirms the rollback script is present
+with mode `0700`, the archive exists, `systemd-run` is available, and a timer
+can actually be armed and cancelled. Do not proceed to step 3 if this fails.
 
 ### 2. Apply (risky — restarts networkd)
 
@@ -345,8 +362,35 @@ The `hypervisor-networking` role's verify-and-disarm block confirms the bridge,
 the VLAN subinterface address, and the default route are healthy, then cancels
 the 10-minute rollback timer.
 
-> The `networkd` role's own 5-minute timer is disarmed inline during the apply
-> run itself, so only the `hypervisor-networking` timer needs this second pass.
+> There is only one timer, and this pass is what disarms it. If the verify
+> assertions fail, the play stops with the timer still armed and the rollback
+> fires on schedule — that is the intended behaviour. Do not re-run until it
+> has fired and the host is reachable on its old address again.
+
+### 5. If it goes wrong
+
+The rollback fires on its own at the end of the window. To trigger it
+immediately from the console instead of waiting:
+
+```bash
+/usr/local/sbin/networkd-hypervisor-rollback
+```
+
+That restores the archived config, disables systemd-networkd, unmasks
+`ifup@.service`, re-enables `networking.service`, and raises the NIC with
+`ifup --force`. If even that fails, the fully manual equivalent is:
+
+```bash
+systemctl disable --now systemd-networkd
+systemctl unmask ifup@.service
+systemctl enable --now networking
+ifup --force <iface>
+ip -4 addr show <iface>
+```
+
+`ifup --force` matters: `ifup -a` processes only interfaces marked `auto`, and
+the NIC is `allow-hotplug`, so the plain service start will not raise it on its
+own once udev has stopped re-firing for an already-present device.
 
 ---
 
