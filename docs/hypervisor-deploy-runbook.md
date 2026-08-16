@@ -373,6 +373,26 @@ is needed** — dnsmasq re-points the A record to the new lease and re-runs reso
 automatically. Allow a few seconds for the new lease / DNS update before
 reconnecting.
 
+> **On macOS, `dig` is not a valid check here.** `dig` queries the nameserver
+> directly and bypasses mDNSResponder, which is the cache `ssh` and Ansible
+> actually use. After a cutover it will happily report the new address while
+> every tool on the machine still connects to the old one. Use the system
+> resolver instead:
+>
+> ```bash
+> dscacheutil -q host -a name <hypervisor-fqdn>    # what ssh will really get
+> ```
+>
+> If it still shows the pre-cutover address, flush and retry:
+>
+> ```bash
+> sudo dscacheutil -flushcache
+> sudo killall -HUP mDNSResponder
+> ```
+>
+> Both commands are needed — the first clears the Directory Service cache, the
+> second restarts the responder holding the DNS entries.
+
 ### 4. Verify
 
 On the host:
