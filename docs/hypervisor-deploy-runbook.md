@@ -84,7 +84,8 @@ Phase 3    Networking migration + bridge (OPTIONAL, DEFERRED, RISKY — needs co
   │     └─ gate: staged 10-<iface>.network is DHCP-only (direct change proof)
   ├─ apply:  --tags networking  -e hypervisor_networking_apply=true
   ├─ reconnect on br0.<vlan> — SAME FQDN, no inventory edit (dnsmasq re-points A)
-  └─ re-run: --tags networking  → verify-and-disarm cancels rollback timer
+  │     └─ the IP DOES change: br0.<vlan> uses the bridge MAC, so DHCP issues a new lease
+  └─ if it does not come back: recover from the console — there is no automatic rollback
 Phase 4    Post-migration DNS re-verification (OPTIONAL, DEFERRED)
   └─ host still resolves names via dnsmasq AND is itself resolvable by system_hostname
 ```
@@ -287,15 +288,23 @@ you're specifically picking that back up.
 > in as root on it before you begin.** The host IP moves to the server-VLAN
 > subinterface and connectivity drops mid-play. Root over SSH is blocked
 > unconditionally, so the console password set in Phase 0 is the only way back
-> in if the rollback also fails.
+> in. **There is no automatic rollback** — see "If it goes wrong" below.
 >
-> One dead-man rollback timer covers this: `hypervisor_networking_rollback_window`,
-> default `600` seconds. There is a single cutover — `hypervisor-networking`
-> stages the bridge config and then imports `networkd`'s `handoff.yml`, so the
-> host goes from ifupdown straight to the bridge with no intermediate state.
-> Everything in steps 3–5 (reconnect, find the new lease, re-run to disarm) has
-> to fit inside that window. Raise it for a first attempt:
-> `-e hypervisor_networking_rollback_window=1200`.
+> There is a single cutover: `hypervisor-networking` stages the bridge config
+> and then imports `networkd`'s `handoff.yml`, so the host goes from ifupdown
+> straight to the bridge with no intermediate state where two managers hold the
+> NIC.
+>
+> A dead-man rollback timer used to cover this phase and was removed. It could
+> not work: restoring an archive of `/etc/systemd/network` does not undo the
+> cutover, because stopping `systemd-networkd` leaves the bridge and VLAN
+> netdevs it created in place and the physical NIC still enslaved to the bridge.
+> Handing that NIC back to ifupdown produced a host running both stacks at once,
+> with an IP on a bridge port that can never receive traffic — a state
+> materially harder to diagnose than an unreachable host, and one that appeared
+> asynchronously while the host was being troubleshot. With working out-of-band
+> console access, a timer that mutates the host underneath you costs more than
+> it saves.
 
 ### 1. Stage (safe — no restart)
 
@@ -304,10 +313,9 @@ cd ansible
 ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=false
 ```
 
-This stages the bridge/VLAN/physical-NIC units, archives the current config,
-and writes the rollback script. Nothing is stopped, started, masked, or
-restarted — the cutover is gated on `hypervisor_networking_apply`, not on the
-tag.
+This stages the bridge/VLAN/physical-NIC units. Nothing is stopped, started,
+masked, or restarted — the cutover is gated on `hypervisor_networking_apply`,
+not on the tag.
 
 `networkd` runs here as a dependency with `networkd_stage_primary: false`, so
 it deliberately renders **no** unit of its own. A `10-<iface>.network` would
@@ -325,15 +333,11 @@ grep -rn 'Address=\|Gateway=\|DNS=\|Domains=' /etc/systemd/network
 # no output — addressing is DHCP-only on the VLAN subinterface
 ```
 
-**Checkpoint — the safety net is real before you rely on it:**
+**Checkpoint — the console works before you rely on it:**
 
-```bash
-ansible-playbook tests/test-hypervisor-networking-rollback.yml
-```
-
-Preflight only, no network disruption. Confirms the rollback script is present
-with mode `0700`, the archive exists, `systemd-run` is available, and a timer
-can actually be armed and cancelled. Do not proceed to step 3 if this fails.
+Log in as root on the out-of-band console *now* and confirm the password from
+Phase 0 is accepted. This is the entire safety net; verifying it after the
+cutover is too late.
 
 ### 2. Apply (risky — restarts networkd)
 
@@ -352,45 +356,75 @@ is needed** — dnsmasq re-points the A record to the new lease and re-runs reso
 automatically. Allow a few seconds for the new lease / DNS update before
 reconnecting.
 
-### 4. Re-run to verify and disarm
+### 4. Verify
+
+On the host:
 
 ```bash
-ansible-playbook site.yml --tags networking
+ip -br addr show br0.<vlan>          # has a global IPv4 address
+ip route show default                # exactly ONE default, dev br0.<vlan>
+bridge vlan show                     # <iface>: <vlan> PVID Egress Untagged, others tagged
+systemctl is-enabled systemd-networkd networking
+                                     # expect: enabled / disabled
 ```
 
-The `hypervisor-networking` role's verify-and-disarm block confirms the bridge,
-the VLAN subinterface address, and the default route are healthy, then cancels
-the 10-minute rollback timer.
+The `is-enabled` check is the one people skip. `systemd-networkd` must be
+**enabled**, not merely active — it can be socket-activated while disabled, in
+which case the cutover silently does not survive a reboot.
 
-> There is only one timer, and this pass is what disarms it. If the verify
-> assertions fail, the play stops with the timer still armed and the rollback
-> fires on schedule — that is the intended behaviour. Do not re-run until it
-> has fired and the host is reachable on its old address again.
+> **Two default routes means the cutover is half-done.** If `ip route` shows a
+> second default on the physical NIC at a lower metric (dhcpcd uses ~1002,
+> networkd uses 1024), a DHCP client survived the handoff and the host is
+> unreachable from off-box even though everything looks up locally. An IP on a
+> bridge port cannot receive traffic: frames arriving on the port are consumed
+> by the bridge and never reach the port's own IP stack. Go to step 5.
 
 ### 5. If it goes wrong
 
-The rollback fires on its own at the end of the window. To trigger it
-immediately from the console instead of waiting:
+There is no automatic rollback. Recovery is a console job.
+
+**First, check whether it is only a stray DHCP client** (the two-default-routes
+signature above). This is recoverable without undoing anything:
 
 ```bash
-/usr/local/sbin/networkd-hypervisor-rollback
+pkill -x dhcpcd
+ip addr flush dev <iface>
+ip route                             # one default, via br0.<vlan>
+ping -c2 <gateway>
 ```
 
-That restores the archived config, disables systemd-networkd, unmasks
-`ifup@.service`, re-enables `networking.service`, and raises the NIC with
-`ifup --force`. If even that fails, the fully manual equivalent is:
+If the gateway answers, the bridge is fine — make it durable and stop:
+
+```bash
+systemctl enable systemd-networkd
+systemctl disable networking
+systemctl mask ifup@.service
+```
+
+**To abandon the bridge and return to ifupdown:**
 
 ```bash
 systemctl disable --now systemd-networkd
 systemctl unmask ifup@.service
-systemctl enable --now networking
-ifup --force <iface>
-ip -4 addr show <iface>
+systemctl enable networking
+rm -f /etc/systemd/network/*.network /etc/systemd/network/*.netdev
+systemctl reboot
 ```
 
-`ifup --force` matters: `ifup -a` processes only interfaces marked `auto`, and
-the NIC is `allow-hotplug`, so the plain service start will not raise it on its
-own once udev has stopped re-firing for an already-present device.
+Both the file removal and the reboot are load-bearing. Removing the units stops
+`systemd-networkd.socket` from activating networkd again and rebuilding the
+bridge from the config still on disk. The reboot is what actually clears the
+bridge, the VLAN subinterface, and the NIC's enslavement — **stopping
+`systemd-networkd` does not delete the netdevs it created**, and running `ifup`
+against a NIC that is still a bridge port is exactly what produces the
+unreachable two-stack state.
+
+Verify after reboot:
+
+```bash
+ip -br addr show <iface>             # address back on the physical NIC
+ip link show br0                     # "does not exist"
+```
 
 ---
 
@@ -430,8 +464,9 @@ From another host or the router:
   both succeed.
 - Phase 2.5 (MVP complete here): after reboot/lease renewal, another host
   resolves `system_hostname` via dnsmasq.
-- Phase 3 (optional/deferred): staged `10-<iface>.network` is DHCP-only;
-  bridge and VLAN subif come up after apply; rollback timers disarmed.
+- Phase 3 (optional/deferred): staged `10-<iface>.network` is DHCP-only; bridge
+  and VLAN subif come up after apply; exactly one default route, on
+  `br0.<vlan>`; `systemd-networkd` enabled and `networking` disabled.
 - Phase 4 (optional/deferred): host still resolves lab names via dnsmasq
   (forward + reverse) and is itself resolvable by `system_hostname` after the
   bridge move.
@@ -445,16 +480,11 @@ From another host or the router:
   Phase 2) — a *third* run should then make zero changes across `identity`,
   `baseline`, `security`, and `kvm`. On an already-converged host, a single
   re-run making zero changes is the expected result.
-- Rollback safety test (run from `ansible/`) — covers the optional/deferred
-  Phase 3 machinery specifically, not the MVP path:
-
-  ```bash
-  ansible-playbook tests/test-hypervisor-networking-rollback.yml
-  ```
-
-  This runs the preflight checks. The live test is `never`-gated; add
-  `--tags live-fire` to exercise it. Full path:
-  `ansible/tests/test-hypervisor-networking-rollback.yml`.
+- Cutover reboot test — covers the optional/deferred Phase 3 machinery
+  specifically, not the MVP path. After a successful cutover, reboot the host
+  and confirm it comes back on `br0.<vlan>` with one default route and no
+  `dhcpcd` process. This is what catches a `systemd-networkd` that is active but
+  not enabled, and is the only Phase 3 regression check worth running.
 
 ---
 
@@ -482,9 +512,13 @@ From another host or the router:
   `site.yml`.
 - **Forgot `--tags networking`** → the (optional, deferred) networking roles
   never run; the host stays on plain DHCP, which is the expected MVP state.
-- **Applied networking without console/OOB access** → an unexpected IP move can
-  lock you out until the dead-man timer rolls back. Extra caution warranted
-  since this path is unvalidated on real hardware.
+- **Applied networking without console/OOB access** → an unexpected IP move
+  locks you out with no way back. There is no automatic rollback and root over
+  SSH is blocked unconditionally, so the console is the only recovery path.
+- **A DHCP client survived the handoff** → `ip route` shows two defaults and the
+  host is unreachable off-box while looking healthy at the console. The address
+  on the physical NIC is unusable once that NIC is a bridge port. See Phase 3
+  step 5.
 - **Dropped `-e ansible_host=<bootstrap-fqdn>` before Phase 2.5** → any
   command run without the override between the first Phase 2 apply and the
   Phase 2.5 DNS checkpoint fails to connect, since inventory's `ansible_host`

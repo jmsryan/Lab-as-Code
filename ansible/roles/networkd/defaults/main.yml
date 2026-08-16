@@ -30,8 +30,3 @@ networkd_stage_primary: true
 # unless this is true. Mirrors hypervisor_networking_apply so both roles read
 # the same way. `--tags networking` alone stages and stops.
 networkd_apply: false
-
-# Seconds before the dead-man switch fires and restores the previous stack.
-# Must outlast finding the host's new address and reconnecting to it, since
-# the address can change when the interface topology does.
-networkd_rollback_window: 600

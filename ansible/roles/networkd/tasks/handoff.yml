@@ -8,14 +8,14 @@
 # at the moment its config is staged — that is what collapses the hypervisor
 # path from two connection-breaking cutovers to one.
 #
-# PRECONDITIONS. The caller must have already:
-#   1. staged the final .network/.netdev files
-#   2. archived /etc/systemd/network and staged a rollback script
-#   3. armed a dead-man switch that runs that script
-# This file only tears the legacy stack down. The caller starts
-# systemd-networkd and verifies, because the two callers do that differently:
-# standalone verifies in-run, the hypervisor ends the play and verifies on the
-# reconnect run.
+# PRECONDITION: the caller must have already staged the final
+# .network/.netdev files. This file only tears the legacy stack down. The
+# caller starts systemd-networkd and verifies, because the two callers do that
+# differently: standalone verifies in-run, the hypervisor ends the play and
+# verifies on the reconnect run.
+#
+# This is irreversible without console access. There is no automatic rollback —
+# see the note at the top of hypervisor-networking/tasks/main.yml.
 #
 # Self-contained by design: it detects what it needs rather than relying on
 # facts the caller happened to set.
@@ -51,31 +51,14 @@
   failed_when: false
 
 - name: Report the legacy stack about to be dismantled
-  # This is the input to an irreversible-without-rollback step, so it is worth
-  # a line in the run output.
+  # This step is irreversible without console access, so what is about to be
+  # torn down is worth a line in the run output — it is also the record of
+  # what a console recovery has to put back.
   ansible.builtin.debug:
     msg: >-
       networking={{ networkd_ho_ifupdown.status.ActiveState | default('absent') }}
       NetworkManager={{ networkd_ho_nm.status.ActiveState | default('absent') }}
       dhcpcd={{ 'running' if networkd_ho_dhcpcd.rc == 0 else 'stopped' }}
-
-- name: Record what rollback has to put back
-  # The dead-man script reads this to restore only what was actually taken
-  # away. Re-enabling NetworkManager on a host that never ran it would be its
-  # own outage.
-  ansible.builtin.copy:
-    dest: /etc/systemd/network.legacy-stack
-    owner: root
-    group: root
-    mode: "0644"
-    content: |
-      {% if (networkd_ho_ifupdown.status.ActiveState | default('')) == 'active' %}
-      networking
-      {% endif %}
-      {% if (networkd_ho_nm.status.ActiveState | default('')) == 'active' %}
-      NetworkManager
-      {% endif %}
-      unmask-ifup
 
 - name: Stop and disable NetworkManager
   ansible.builtin.systemd:
@@ -96,7 +79,8 @@
 
 - name: Mask the ifup template unit
   # Masking the template masks every instance, so udev cannot re-trigger ifup
-  # on any interface while systemd-networkd owns the host. Rollback unmasks it.
+  # on any interface while systemd-networkd owns the host. A console recovery
+  # has to `systemctl unmask ifup@.service` to hand the NIC back.
   ansible.builtin.systemd:
     name: "ifup@.service"
     masked: true
@@ -111,12 +95,26 @@
   when: networkd_ho_ifupdown.status.ActiveState is defined
 
 - name: Stop any running dhcpcd process
-  # `dhcpcd -x` asks it to exit and release; pkill is the fallback for an
-  # instance that will not. Failure is tolerated: if no dhcpcd is running the
-  # whole point is already satisfied.
-  ansible.builtin.shell: dhcpcd -x 2>/dev/null || pkill -x dhcpcd || true
+  # Every command runs unconditionally rather than `dhcpcd -x || pkill -x
+  # dhcpcd`. ifupdown starts dhcpcd per-interface, so a bare `dhcpcd -x` can
+  # target the master pidfile, exit 0 having killed nothing, and short-circuit
+  # the `||` — leaving the daemon running straight through the handoff. That
+  # is how a host ends up with dhcpcd on the enslaved NIC and systemd-networkd
+  # on the bridge, both holding leases, unreachable on either.
+  #
+  # `dhcpcd -x` is the graceful form (it releases the lease); pkill is the
+  # backstop. The pgrep is the authority — this task must fail loudly rather
+  # than let the cutover continue with a second DHCP client alive.
+  #
+  # Failing here is safe: systemd-networkd has not been restarted yet, so the
+  # NIC is not enslaved and the host keeps its current address.
+  ansible.builtin.shell: |
+    dhcpcd -x "{{ networkd_primary_iface }}" 2>/dev/null
+    dhcpcd -x 2>/dev/null
+    pkill -x dhcpcd 2>/dev/null
+    sleep 1
+    ! pgrep -x dhcpcd >/dev/null
   args:
     executable: /bin/bash
   changed_when: networkd_ho_dhcpcd.rc == 0
-  failed_when: false
   when: networkd_ho_dhcpcd.rc == 0

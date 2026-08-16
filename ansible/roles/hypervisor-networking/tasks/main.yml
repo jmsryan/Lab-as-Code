@@ -1,92 +1,18 @@
 ---
-# --------------------------------
-# Verify-and-disarm (re-run after apply)
-# --------------------------------
-
-- name: Check if hypervisor networking rollback timer is armed # noqa: command-instead-of-module
-  # The rollback timer is a transient systemd-run unit that usually does not
-  # exist. ansible.builtin.systemd raises "Could not find the requested
-  # service" on a missing unit rather than reporting it inactive, so the
-  # defensive shell form is deliberate, not an oversight.
-  ansible.builtin.shell: systemctl is-active networkd-hypervisor-rollback.timer 2>/dev/null || echo inactive
-  args:
-    executable: /bin/bash
-  register: hypervisor_rollback_timer_state
-  changed_when: false
-  failed_when: false
-
-- name: Verify and disarm rollback after successful reconnect
-  when: hypervisor_rollback_timer_state.stdout | trim == "active"
-  tags:
-    - risky
-  block:
-    - name: Verify systemd-networkd is active
-      ansible.builtin.systemd:
-        name: systemd-networkd
-      register: networkd_verify_service
-      changed_when: false
-      failed_when: false
-
-    - name: Verify bridge interface exists
-      ansible.builtin.command: "ip link show {{ net_bridge_name }}"
-      register: networkd_verify_bridge
-      changed_when: false
-      failed_when: false
-
-    - name: Verify VLAN subinterface has an IPv4 address
-      ansible.builtin.shell: "set -o pipefail; ip -4 -o addr show dev {{ net_bridge_name }}.{{ net_server_vlan }} scope global | awk '{print $4}'"
-      args:
-        executable: /bin/bash
-      register: networkd_verify_vlan_ipv4
-      changed_when: false
-      failed_when: false
-
-    - name: Verify a default route exists
-      ansible.builtin.shell: "set -o pipefail; ip route show default | head -n 1"
-      args:
-        executable: /bin/bash
-      register: networkd_verify_default_route
-      changed_when: false
-      failed_when: false
-
-    - name: Assert network state is healthy
-      ansible.builtin.assert:
-        that:
-          - networkd_verify_service.status.ActiveState is defined
-          - networkd_verify_service.status.ActiveState == "active"
-          - networkd_verify_bridge.rc == 0
-          - (networkd_verify_vlan_ipv4.stdout | trim) != ""
-          - (networkd_verify_default_route.stdout | trim) != ""
-        fail_msg: >
-          Network state is unhealthy after apply.
-          systemd-networkd: {{ networkd_verify_service.status.ActiveState | default('unknown') }}
-          Bridge {{ net_bridge_name }}: {{ 'present' if networkd_verify_bridge.rc == 0 else 'missing' }}
-          VLAN subif IPv4: '{{ networkd_verify_vlan_ipv4.stdout | trim }}'
-          Default route: '{{ networkd_verify_default_route.stdout | trim }}'
-          The rollback timer is still armed and will fire automatically.
-          Do not re-run until rollback completes and you can reconnect.
-        success_msg: >
-          Network state verified healthy. Disarming rollback timer.
-
-    - name: Disarm hypervisor networking rollback timer # noqa: command-instead-of-module
-      # Transient systemd-run unit that may not exist; ansible.builtin.systemd
-      # errors on a missing unit instead of no-op'ing. See the note on the
-      # armed-check task above.
-      ansible.builtin.shell: systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
-      args:
-        executable: /bin/bash
-      changed_when: true
-      failed_when: false
-
-    - name: Previous apply verified healthy
-      ansible.builtin.debug:
-        msg:
-          - "Bridge {{ net_bridge_name }} is up."
-          - "VLAN subif {{ net_bridge_name }}.{{ net_server_vlan }} has IPv4 {{ networkd_verify_vlan_ipv4.stdout | trim }}."
-          - "Rollback timer disarmed."
-
-    - name: End role — state is already correct
-      ansible.builtin.meta: end_role
+# Configure a VLAN-aware Linux bridge and hand networking to systemd-networkd.
+#
+# Staging is unconditional and safe. The cutover is gated behind
+# hypervisor_networking_apply — see defaults/main.yml.
+#
+# There is deliberately no automatic rollback. A dead-man switch was tried and
+# removed: restoring an archive of /etc/systemd/network cannot undo the cutover,
+# because stopping systemd-networkd does not delete the bridge and VLAN netdevs
+# it created. The physical NIC stays enslaved, so handing it back to ifupdown
+# produced a host running both stacks at once — an IP on a bridge port, which
+# can never receive traffic — and that was harder to diagnose than an
+# unreachable host. A timer that mutates the host while you are diagnosing it
+# costs more than it saves when out-of-band console access is available.
+# Recovery is a console job. See docs/hypervisor-deploy-runbook.md.
 
 - name: Assert required hypervisor networking variables are defined
   ansible.builtin.assert:
@@ -115,11 +41,6 @@
     owner: root
     group: root
     mode: "0755"
-
-- name: Generate timestamp for networkd config backup
-  ansible.builtin.command: date +%Y%m%d%H%M%S
-  register: hypervisor_networkd_backup_ts
-  changed_when: false
 
 - name: Define networkd config paths
   ansible.builtin.set_fact:
@@ -186,72 +107,6 @@
   loop: "{{ networkd_unapproved_files }}"
   when:
     - hypervisor_networking_cleanup | bool
-
-- name: Back up current networkd config before staging
-  ansible.builtin.shell: |
-    set -euo pipefail
-    tar -C /etc/systemd -cf /etc/systemd/network.hypervisor-rollback.tar network
-  args:
-    executable: /bin/bash
-  changed_when: true
-
-- name: Stage hypervisor networking rollback script
-  ansible.builtin.copy:
-    dest: /usr/local/sbin/networkd-hypervisor-rollback
-    owner: root
-    group: root
-    mode: "0700"
-    content: |
-      #!/bin/bash
-      # Dead-man switch: restore the pre-bridge network stack.
-      #
-      # Deliberately not `set -e`. Every step is best-effort because the job is
-      # to get the host reachable again; a failure in one step must not skip
-      # the rest.
-      set -uo pipefail
-
-      ARCHIVE=/etc/systemd/network.hypervisor-rollback.tar
-      STATE=/etc/systemd/network.legacy-stack
-
-      # Only destroy the live config once the archive is known to be readable.
-      # Deleting first and finding the archive missing afterwards leaves the
-      # host with no configuration at all.
-      if tar -tf "$ARCHIVE" >/dev/null 2>&1; then
-        systemctl stop systemd-networkd 2>/dev/null || true
-        rm -rf /etc/systemd/network
-        mkdir -p /etc/systemd/network
-        tar -C /etc/systemd -xf "$ARCHIVE" || true
-      fi
-
-      # Undo the handoff, or ifupdown cannot take the NIC back: networkd's
-      # handoff.yml disables networking.service and masks ifup@.service, and
-      # restoring config files alone would leave nothing able to raise the
-      # interface.
-      systemctl disable --now systemd-networkd 2>/dev/null || true
-
-      if [ -r "$STATE" ]; then
-        # networking.service raises allow-hotplug interfaces only from its
-        # second ExecStart, which is conditional on this marker. Its own
-        # ExecStopPost creates it, but /run is tmpfs — a reboot between the
-        # handoff and this rollback would clear it.
-        touch /run/network/restart-hotplug 2>/dev/null || true
-        while read -r entry; do
-          [ -z "$entry" ] && continue
-          case "$entry" in
-            unmask-ifup) systemctl unmask 'ifup@.service' 2>/dev/null || true ;;
-            *)           systemctl enable --now "$entry" 2>/dev/null || true ;;
-          esac
-        done < "$STATE"
-
-        # `ifup -a` processes only interfaces marked `auto`, and the physical
-        # NIC is allow-hotplug. udev will not re-fire for a device already
-        # present, so raise it explicitly rather than trust the marker above.
-        ifup --force {{ net_phys_iface }} 2>/dev/null || true
-      else
-        # No state file means the handoff never ran, so ifupdown was never
-        # dismantled; restart networkd on the restored config instead.
-        systemctl start systemd-networkd 2>/dev/null || true
-      fi
 
 - name: Stage bridge netdev
   ansible.builtin.template:
@@ -345,41 +200,14 @@
       - "Staged: {{ networkd_paths.phys_network }}"
       - "Apply is {{ 'enabled' if (hypervisor_networking_apply | bool) else 'disabled' }}."
 
-- name: Stop any existing hypervisor networking rollback timer # noqa: command-instead-of-module
-  # Transient systemd-run unit that may not exist; ansible.builtin.systemd
-  # errors on a missing unit instead of no-op'ing.
-  ansible.builtin.shell: systemctl stop networkd-hypervisor-rollback.timer 2>/dev/null || true
-  args:
-    executable: /bin/bash
-  changed_when: false
-  failed_when: false
-  when:
-    - hypervisor_networking_apply | bool
-    - hypervisor_networking_apply_needed | bool
-  tags:
-    - risky
-
-- name: Arm hypervisor networking rollback timer
-  ansible.builtin.shell: >
-    systemd-run --on-active={{ hypervisor_networking_rollback_window }}
-    --unit=networkd-hypervisor-rollback
-    --description="hypervisor-networking rollback dead-man switch"
-    /usr/local/sbin/networkd-hypervisor-rollback
-  args:
-    executable: /bin/bash
-  changed_when: true
-  when:
-    - hypervisor_networking_apply | bool
-    - hypervisor_networking_apply_needed | bool
-  tags:
-    - risky
-
 - name: Take ownership from the legacy network stack
-  # The single cutover. The bridge config is staged, the archive and rollback
-  # script are in place, and the dead-man switch is armed — so this is the
-  # moment ifupdown/dhcpcd can be dismantled. Importing networkd's handoff
-  # rather than letting networkd apply on its own is what keeps this to one
+  # The single cutover. The bridge config is staged, so this is the moment
+  # ifupdown/dhcpcd can be dismantled. Importing networkd's handoff rather than
+  # letting networkd apply on its own is what keeps this to one
   # connection-breaking step instead of two.
+  #
+  # This is the point of no return without console access. Have out-of-band
+  # console open before running with hypervisor_networking_apply=true.
   ansible.builtin.import_role:
     name: networkd
     tasks_from: handoff.yml
@@ -415,8 +243,10 @@
   ansible.builtin.debug:
     msg: >-
       Networking is being cut over on {{ inventory_hostname }}. The host's
-      address may change. Reconnect, then re-run with --tags networking to
-      verify and disarm the rollback timer before it fires.
+      address will likely change, because the VLAN subinterface takes the
+      bridge's MAC rather than the physical NIC's and DHCP issues a new lease.
+      Find the new address, update inventory, and reconnect. If the host does
+      not come back, recover from the console — there is no automatic rollback.
   when:
     - hypervisor_networking_apply | bool
     - hypervisor_networking_apply_needed | bool

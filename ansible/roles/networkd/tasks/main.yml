@@ -3,6 +3,10 @@
 #
 # Staging is unconditional and safe. Nothing is stopped, started, masked, or
 # restarted unless networkd_apply is true — see defaults/main.yml.
+#
+# The cutover has no automatic rollback. Recovery is an out-of-band console
+# job; see the note at the top of hypervisor-networking/tasks/main.yml for why
+# the dead-man switch that used to live here was removed.
 
 - name: Gather network facts
   # Only the network subset. The previous version also pulled hardware,
@@ -100,84 +104,11 @@
     mode: "0644"
   when: networkd_stage_primary | bool
 
-- name: Archive /etc/systemd/network for rollback
-  # Unconditional. The previous version only archived when its own template
-  # changed, while the risky phase ran on a broader condition — so the set of
-  # runs that could break networking was larger than the set protected by a
-  # backup.
-  ansible.builtin.shell: |
-    set -euo pipefail
-    tar -C /etc/systemd -cf /etc/systemd/network.networkd-rollback.tar network
-  args:
-    executable: /bin/bash
-  changed_when: true
-
-- name: Stage the dead-man rollback script
-  ansible.builtin.copy:
-    dest: /usr/local/sbin/networkd-rollback
-    owner: root
-    group: root
-    mode: "0700"
-    content: |
-      #!/bin/bash
-      # Dead-man switch: restore the pre-migration network stack.
-      #
-      # Deliberately not `set -e`. Every step is best-effort because the job is
-      # to get the host reachable again; a failure in one step must not skip
-      # the rest.
-      set -uo pipefail
-
-      ARCHIVE=/etc/systemd/network.networkd-rollback.tar
-      STATE=/etc/systemd/network.legacy-stack
-
-      # Only destroy the live config once the archive is known to be readable.
-      # Deleting first and discovering the archive is missing afterwards leaves
-      # the host with no configuration at all.
-      if tar -tf "$ARCHIVE" >/dev/null 2>&1; then
-        systemctl stop systemd-networkd 2>/dev/null || true
-        rm -rf /etc/systemd/network
-        mkdir -p /etc/systemd/network
-        tar -C /etc/systemd -xf "$ARCHIVE" || true
-      fi
-
-      # Undo the handoff, or the legacy stack cannot take the NIC back.
-      systemctl disable --now systemd-networkd 2>/dev/null || true
-
-      if [ -r "$STATE" ]; then
-        # networking.service raises allow-hotplug interfaces only from its
-        # second ExecStart, which is conditional on this marker. Its own
-        # ExecStopPost creates it, but /run is tmpfs — a reboot between the
-        # handoff and this rollback would clear it.
-        touch /run/network/restart-hotplug 2>/dev/null || true
-        while read -r entry; do
-          [ -z "$entry" ] && continue
-          case "$entry" in
-            unmask-ifup) systemctl unmask 'ifup@.service' 2>/dev/null || true ;;
-            *)           systemctl enable --now "$entry" 2>/dev/null || true ;;
-          esac
-        done < "$STATE"
-      fi
-
-      # `ifup -a` processes only interfaces marked `auto`, and the primary NIC
-      # is allow-hotplug. udev will not re-fire for a device that is already
-      # present, so raise it explicitly rather than trust the marker above.
-      ifup --force {{ networkd_primary_iface }} 2>/dev/null || true
-
 - name: Apply — hand networking to systemd-networkd
   when: networkd_apply | bool
   tags:
     - risky
   block:
-    - name: Arm the dead-man switch
-      ansible.builtin.shell: >
-        systemd-run --on-active={{ networkd_rollback_window }}
-        --unit=networkd-rollback
-        --description="networkd migration dead-man switch"
-        /usr/local/sbin/networkd-rollback
-      args:
-        executable: /bin/bash
-      changed_when: true
-
     - name: Take ownership from the legacy network stack
       ansible.builtin.import_tasks: handoff.yml
 
@@ -219,9 +150,8 @@
           Post-handoff verification failed.
           IPv4: '{{ networkd_post_addr.stdout | trim }}'
           Default route interface: '{{ networkd_post_route.stdout | trim }}'
-          The dead-man switch is still armed and will restore the previous
-          stack within {{ networkd_rollback_window }}s. Do not re-run until it
-          has fired and the host is reachable again.
+          The legacy stack has already been dismantled and there is no
+          automatic rollback. Recover from the out-of-band console.
         success_msg: >-
           systemd-networkd owns {{ networkd_primary_iface }} with IPv4
           {{ networkd_post_addr.stdout | trim }}.
@@ -230,18 +160,8 @@
       ansible.builtin.wait_for_connection:
         timeout: 60
 
-    - name: Disarm the dead-man switch # noqa: command-instead-of-module
-      # Transient systemd-run unit; ansible.builtin.systemd errors on a missing
-      # unit instead of no-op'ing.
-      ansible.builtin.shell: systemctl stop networkd-rollback.timer 2>/dev/null || true
-      args:
-        executable: /bin/bash
-      changed_when: true
-      failed_when: false
-
     - name: Migration committed
       ansible.builtin.debug:
         msg:
           - "systemd-networkd now owns networking."
-          - "Dead-man switch disarmed."
           - "{{ networkd_primary_iface }}: {{ networkd_post_addr.stdout | trim }}"

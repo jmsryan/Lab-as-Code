@@ -84,12 +84,14 @@ The networking roles are gated behind the `networking` tag and skipped by a defa
 
 Both roles gate the connection-breaking step behind a variable, not a tag. Tags alone are not a safety mechanism: role-level tags are additive, so a task tagged `risky` inside a role tagged `networking` is still selected by `--tags networking`.
 
-- **Stage** (`--tags networking`): writes `.network`/`.netdev` files, archives the current config, stages the rollback script. Nothing is stopped, started, masked, or restarted.
-- **Apply** (`--tags networking` + `-e hypervisor_networking_apply=true`): arms a dead-man switch, hands ownership over from the legacy stack, restarts systemd-networkd, and ends the play because the IP may change.
+- **Stage** (`--tags networking`): writes `.network`/`.netdev` files. Nothing is stopped, started, masked, or restarted.
+- **Apply** (`--tags networking` + `-e hypervisor_networking_apply=true`): hands ownership over from the legacy stack, restarts systemd-networkd, and ends the play because the IP changes.
+
+There is **no automatic rollback**, by design. A dead-man timer was tried and removed: restoring an archive of `/etc/systemd/network` cannot undo a cutover, because stopping systemd-networkd leaves the bridge and VLAN netdevs it created in place and the physical NIC still enslaved. Handing that NIC back to ifupdown yields a host running both stacks at once — an IP on a bridge port, which can never receive traffic — which is harder to diagnose than an unreachable host and appears asynchronously mid-troubleshooting. Recovery is an out-of-band console job; see `docs/hypervisor-deploy-runbook.md` Phase 3 step 5.
 
 There is exactly **one** cutover. `hypervisor-networking` stages the bridge config first, then imports networkd's `handoff.yml`, so the host goes from ifupdown straight to the final bridge topology without an intermediate state where systemd-networkd and dhcpcd both hold the NIC.
 
-The handoff stops and disables `networking.service`, stops `ifup@<iface>.service`, masks the `ifup@.service` template so udev cannot re-trigger it, and stops the dhcpcd process directly — dhcpcd has no systemd unit on Debian 13. `/etc/systemd/network.legacy-stack` records what was taken away so the rollback script restores only that.
+The handoff stops and disables `networking.service`, stops `ifup@<iface>.service`, masks the `ifup@.service` template so udev cannot re-trigger it, and stops the dhcpcd process directly — dhcpcd has no systemd unit on Debian 13. The dhcpcd step asserts no process survives and fails the play if one does; it runs before systemd-networkd is restarted, so failing there leaves the NIC un-enslaved and the host reachable.
 
 ### Cleanup Behavior
 

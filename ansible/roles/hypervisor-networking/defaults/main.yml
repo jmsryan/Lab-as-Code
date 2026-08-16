@@ -14,9 +14,5 @@ net_bridge_name: br0
 # Whether to apply/restart systemd-networkd after staging
 hypervisor_networking_apply: false
 
-# Seconds before the dead-man switch fires and rolls back networking.
-# Must be long enough to find the new IP, update inventory, and re-run site.yml.
-hypervisor_networking_rollback_window: 600
-
 # Whether to backup/cleanup existing networkd configs before staging
 hypervisor_networking_cleanup: true
