@@ -4,6 +4,10 @@ Ideas that are understood well enough to write down but deliberately not
 implemented. Each entry records the problem, the proposed approach, and what
 still has to be proven before it lands.
 
+For how this work is sequenced against the project's larger goals, see
+[roadmap.md](roadmap.md). MAC pinning below is Stage 0 of that roadmap — its
+canonical description lives here, not there.
+
 ---
 
 ## Pin the bridge MAC to the physical NIC

@@ -7,6 +7,8 @@ Pre-release: v0.2.0 (August 13, 2026) - MVP hypervisor host confirmed working en
 
 ## Documentation
 
+See `docs/roadmap.md` for the sequenced path from the current MVP to a fully automated build
+See `docs/future-work.md` for proposed changes not yet scheduled
 See `docs/hypervisor-design.md` for architectural context
 See `docs/automation-boundaries.md` for tooling responsibility
 See `docs/hypervisor-networking.md` for network role and traffic model
