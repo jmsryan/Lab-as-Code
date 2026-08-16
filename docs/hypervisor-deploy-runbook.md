@@ -70,7 +70,8 @@ Phase 0    Wipe + cloud-init bootstrap (manual)
   └─ gate: ssh svc-ansible@<bootstrap-fqdn> ; hostname = cloud-init local-hostname
 Phase 1    Controller prep (inventory ansible_host = permanent FQDN, unresolved yet + collections)
   └─ gate: ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>  → pong
-Phase 2    Base convergence (identity → baseline → security → kvm ; networking SKIPPED)
+Phase 2    Base convergence (identity → baseline → security → hypervisor-networking → kvm)
+  ├─ networking roles RUN here now, but only stage — apply is gated off by default
   ├─ run with -e ansible_host=<bootstrap-fqdn> (permanent name doesn't resolve yet)
   ├─ identity sets system_hostname → deletes the installer's personal sudo user → ensures dhclient sends hostname
   └─ gate: hostname == system_hostname ; ping still pong ; chrony/libvirtd active ;
@@ -78,15 +79,15 @@ Phase 2    Base convergence (identity → baseline → security → kvm ; networ
 Phase 2.5  DNS registration checkpoint (MVP's DNS proof — no bridge required)
   ├─ reboot host (or renew DHCP lease from console) so dnsmasq re-registers the new name
   └─ gate: another host resolves system_hostname via dnsmasq → drop the -e override from here on
-── MVP ends here ──────────────────────────────────────────────────────────
-Phase 3    Networking migration + bridge (OPTIONAL, DEFERRED, RISKY — needs console/OOB)
-  ├─ stage:  --tags networking  -e hypervisor_networking_apply=false
+── MVP complete here; networking below is now in scope ────────────────────
+Phase 3    Networking cutover to the bridge (RISKY — needs console/OOB)
+  ├─ stage already happened in Phase 2; re-run to confirm it is a no-op
   │     └─ gate: staged 10-<iface>.network is DHCP-only (direct change proof)
   ├─ apply:  --tags networking  -e hypervisor_networking_apply=true
   ├─ reconnect on br0.<vlan> — SAME FQDN, no inventory edit (dnsmasq re-points A)
   │     └─ the IP DOES change: br0.<vlan> uses the bridge MAC, so DHCP issues a new lease
   └─ if it does not come back: recover from the console — there is no automatic rollback
-Phase 4    Post-migration DNS re-verification (OPTIONAL, DEFERRED)
+Phase 4    Post-migration DNS re-verification
   └─ host still resolves names via dnsmasq AND is itself resolvable by system_hostname
 ```
 
@@ -161,11 +162,23 @@ cloud-init bootstrap name (the only one that resolves at this point).
 
 ---
 
-## Phase 2 — Base Convergence (safe; no networking changes)
+## Phase 2 — Base Convergence (safe; stages networking, does not cut over)
 
-The default `site.yml` run applies `identity → baseline → security → kvm`. The
-two networking roles are gated behind `never` + `networking` and are **skipped**
-by a default run.
+The default `site.yml` run applies
+`identity → baseline → security → hypervisor-networking → kvm`.
+
+The networking roles are **no longer** gated behind `never`, so this run stages
+the bridge/VLAN/NIC units and runs the networkd-config cleanup. It does not stop,
+start, mask, or restart anything: the cutover is gated on
+`hypervisor_networking_apply`, which defaults to `false`. Phase 3 is the cutover
+only — its staging step is a no-op re-run of what happened here.
+
+> Consequence worth knowing on a **fresh** host: the bridge config now sits in
+> `/etc/systemd/network` while ifupdown still owns the NIC. Those files are inert
+> only for as long as `systemd-networkd` stays stopped, and it can be
+> socket-activated by `systemd-networkd.socket` even while disabled — which was
+> observed on this host. Do not start or query `systemd-networkd` between
+> Phase 2 and the Phase 3 cutover.
 
 `ansible_host` in inventory is the permanent FQDN, which doesn't resolve
 until *after* this run and Phase 2.5. So this first run (and this run only)
@@ -279,7 +292,7 @@ you're specifically picking that back up.
 
 ---
 
-## Phase 3 — Networking Migration + Bridge (OPTIONAL, DEFERRED, RISKY)
+## Phase 3 — Networking Cutover to the Bridge (RISKY)
 
 > This phase is implemented but has not been validated end-to-end on real
 > hardware. Treat it as a starting point to test carefully, not a proven path.
@@ -306,16 +319,20 @@ you're specifically picking that back up.
 > console access, a timer that mutates the host underneath you costs more than
 > it saves.
 
-### 1. Stage (safe — no restart)
+### 1. Confirm staging (safe — no restart)
+
+Phase 2's default `site.yml` run already staged these units. Re-run the
+networking roles on their own and confirm the result is a **no-op** — any
+change reported here means Phase 2 did not converge, and you should find out
+why before cutting over:
 
 ```bash
 cd ansible
 ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=false
 ```
 
-This stages the bridge/VLAN/physical-NIC units. Nothing is stopped, started,
-masked, or restarted — the cutover is gated on `hypervisor_networking_apply`,
-not on the tag.
+Nothing is stopped, started, masked, or restarted — the cutover is gated on
+`hypervisor_networking_apply`, not on the tag.
 
 `networkd` runs here as a dependency with `networkd_stage_primary: false`, so
 it deliberately renders **no** unit of its own. A `10-<iface>.network` would
@@ -428,7 +445,7 @@ ip link show br0                     # "does not exist"
 
 ---
 
-## Phase 4 — Post-Migration DNS Re-Verification (OPTIONAL, DEFERRED)
+## Phase 4 — Post-Migration DNS Re-Verification
 
 Phase 2.5 already proved DHCP-DNS registration works on the MVP path. This
 phase is a regression check that the same mechanism still holds after the
@@ -510,8 +527,11 @@ From another host or the router:
   silently) if the installer's personal user still has a live session or
   owned process. Log out of that account/close its sessions before running
   `site.yml`.
-- **Forgot `--tags networking`** → the (optional, deferred) networking roles
-  never run; the host stays on plain DHCP, which is the expected MVP state.
+- **Expected `site.yml` to leave networking alone** → it no longer does. The
+  `never` tag is gone, so a default run stages the bridge config and runs the
+  networkd-config cleanup, which deletes any `/etc/systemd/network` unit outside
+  the approved five. It still does not cut over — that needs
+  `-e hypervisor_networking_apply=true`.
 - **Applied networking without console/OOB access** → an unexpected IP move
   locks you out with no way back. There is no automatic rollback and root over
   SSH is blocked unconditionally, so the console is the only recovery path.

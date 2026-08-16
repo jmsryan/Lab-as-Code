@@ -72,7 +72,7 @@ The `ansible/site.yml` playbook applies these roles in order to the `hypervisor`
 3. **security** — firewall (default-deny inbound), SSH hardening, unattended security updates
 4. **hypervisor-networking** — configures a VLAN-aware Linux bridge (`br0`) with the physical NIC enslaved; stages configs under `/etc/systemd/network/`; apply is gated behind `hypervisor_networking_apply: false` by default
 
-**networkd** is not listed in `site.yml`. It is a dependency of `hypervisor-networking` (`roles/hypervisor-networking/meta/main.yml`), which passes it `networkd_stage_primary: false` and `networkd_apply: false`. Listing it separately would invoke it a second time with different parameters — Ansible only deduplicates a role when its parameters match — and that run would stage a `10-<iface>.network` competing with the bridge config. Dependencies inherit the parent's tags, so it stays gated behind `never` + `networking`.
+**networkd** is not listed in `site.yml`. It is a dependency of `hypervisor-networking` (`roles/hypervisor-networking/meta/main.yml`), which passes it `networkd_stage_primary: false` and `networkd_apply: false`. Listing it separately would invoke it a second time with different parameters — Ansible only deduplicates a role when its parameters match — and that run would stage a `10-<iface>.network` competing with the bridge config. Dependencies inherit the parent's tags, so it carries `networking` exactly as its parent does.
 
 The **networkd** role migrates a host from its legacy network stack (ifupdown + dhcpcd, NetworkManager) to systemd-networkd. It is config-agnostic and reusable on any server:
 - **standalone** (default): stages a DHCP `.network` for the default-route NIC and performs the cutover itself
@@ -80,7 +80,9 @@ The **networkd** role migrates a host from its legacy network stack (ifupdown + 
 
 ### Networking Two-Phase Design
 
-The networking roles are gated behind the `networking` tag and skipped by a default `site.yml` run. Pass `--tags networking` to include them.
+The networking roles run on a default `site.yml` run. They carry a `networking` tag so they can be selected on their own, but they are no longer gated behind `never` — networking is in scope, and the goal is one run that brings the host up end to end.
+
+This means a plain `site.yml` stages the bridge config and runs the networkd-config cleanup. It does **not** cut over: that is gated on `hypervisor_networking_apply` (default `false`).
 
 Both roles gate the connection-breaking step behind a variable, not a tag. Tags alone are not a safety mechanism: role-level tags are additive, so a task tagged `risky` inside a role tagged `networking` is still selected by `--tags networking`.
 

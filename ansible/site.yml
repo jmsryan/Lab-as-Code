@@ -15,11 +15,15 @@
     # deduplicates a role when its parameters match — and that second run would
     # stage a 10-<iface>.network that competes with the bridge config.
     #
-    # Dependencies inherit the parent role's tags, so networkd is still gated
-    # behind never + networking exactly as before.
+    # Dependencies inherit the parent role's tags, so networkd carries the
+    # networking tag exactly as hypervisor-networking does.
+    #
+    # No `never` tag: networking is in scope, and the goal is a single run that
+    # brings the host up end to end. This stages the bridge config on every run.
+    # The cutover stays gated on hypervisor_networking_apply (default false),
+    # which is the actual safety mechanism — tags never were.
     - role: hypervisor-networking
       tags:
-        - never
         - networking
     - role: kvm
       tags:
