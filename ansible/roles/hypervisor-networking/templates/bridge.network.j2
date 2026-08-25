@@ -3,6 +3,18 @@
 [Match]
 Name={{ net_bridge_name }}
 
+# The bridge carries no L3 of its own (the host address lives on the
+# .{{ net_server_vlan }} subinterface), so it never reaches a routable state and
+# never leaves setup state "configuring". Under the default
+# RequiredForOnline=yes it blocks systemd-networkd-wait-online until timeout:
+# 120s at boot, which fails the unit and leaves the system "degraded", plus
+# ~30s on every apt-daily run, since apt-helper invokes the binary directly.
+# The physical NIC and the VLAN subinterface still gate network-online.target.
+# Per systemd.network(5) RequiredForOnline=:
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.network.html
+[Link]
+RequiredForOnline=no
+
 [Network]
 VLAN={{ net_bridge_name }}.{{ net_server_vlan }}
 

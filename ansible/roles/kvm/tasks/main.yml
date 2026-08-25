@@ -4,7 +4,7 @@
 # Ordering rationale:
 #   1. Install packages (idempotent, safe to re-run)
 #   2. Verify hardware acceleration is actually available before continuing
-#   3. Bring libvirtd up
+#   3. Ensure libvirt is reachable (socket activation)
 #   4. Grant operator access (group membership)
 #   5. Define and activate the default storage pool
 #   6. Remove the libvirt NAT network we don't use
@@ -52,9 +52,16 @@
       /dev/kvm is missing. Enable VT-x/AMD-V in firmware and reboot before
       re-running this role.
 
-- name: Ensure libvirtd is started and enabled
+- name: Ensure libvirtd socket activation is enabled
+  # Manage the socket, not the service. Debian ships libvirtd socket-activated
+  # with LIBVIRTD_ARGS="--timeout 120" (/etc/default/libvirtd), so the daemon
+  # exits after two minutes idle and `state: started` on libvirtd.service
+  # reports changed on every run where nothing has touched libvirt recently.
+  # The socket is always up and is what actually guarantees availability: a
+  # client connection starts the daemon on demand.
+  # Per libvirt's daemon documentation: https://libvirt.org/daemons.html
   ansible.builtin.systemd:
-    name: libvirtd
+    name: libvirtd.socket
     state: started
     enabled: true
 
