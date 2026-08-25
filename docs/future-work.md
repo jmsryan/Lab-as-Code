@@ -1,8 +1,9 @@
 # Future Work
 
-Ideas that are understood well enough to write down but deliberately not
-implemented. Each entry records the problem, the proposed approach, and what
-still has to be proven before it lands.
+Ideas that are understood well enough to write down but not yet settled —
+either deliberately not implemented, or implemented and awaiting validation on
+real hardware. Each entry records the problem, the approach, and what still has
+to be proven before it can be called done.
 
 For how this work is sequenced against the project's larger goals, see
 [roadmap.md](roadmap.md). MAC pinning below is Stage 0 of that roadmap — its
@@ -27,23 +28,38 @@ NIC's, so the DHCP server sees a new client and issues a different lease.
 Observed on the hypervisor: `eno1` at `b8:ca:3a:b1:a2:7f`, `br0` and `br0.20`
 both at `46:c8:22:77:df:a5`.
 
-**Proposal.** Set `MACAddress=` in the `[NetDev]` section of the bridge
-`.netdev`, templated from the physical NIC's address
-(`ansible_{{ net_phys_iface }}.macaddress`). DHCP should then return the same
-lease, and the host should keep its address through the cutover.
+**Approach.** `MACAddress=` in the `[NetDev]` section of the bridge `.netdev`,
+templated from the physical NIC's address, plus `ClientIdentifier=mac` in the
+`[DHCPv4]` section of the VLAN `.network`.
 
 **Payoff.** SSH survives the cutover, no inventory edit, no lease hunt — and the
 play could verify in-run instead of ending and requiring a reconnect. It removes
 most of the original justification for the dead-man switch that was deleted.
 
-**Unproven.** The mechanism is sound but untested here. Worth confirming:
+**Status.** Implemented in `roles/hypervisor-networking`
+(`templates/bridge.netdev.j2`, `templates/vlan.network.j2`, and the MAC
+resolution tasks in `tasks/main.yml`). **Not yet validated.** The pinned address
+cannot take effect on a running host: netdev properties are fixed when the
+device is created, so `networkctl reload` will not change the MAC of an existing
+bridge. It applies at the next boot.
 
-- whether `br0.<vlan>` picks up the pinned bridge MAC, or needs its own
-  `MACAddress=` on the VLAN netdev
-- whether the DHCP server keys on MAC alone or also on client-identifier, which
-  `dhcpcd` and `systemd-networkd` may generate differently even with a matching
-  MAC (`ClientIdentifier=mac` in `[DHCPv4]` is the lever if so)
-- that the physical NIC's MAC is gathered before the bridge template renders
+**Resolved since this was first written:**
+
+- `br0.<vlan>` inherits the bridge's MAC and needs no `MACAddress=` of its own.
+  It already tracks the bridge's randomly generated address today, so pinning
+  the bridge propagates to the subinterface.
+- The physical NIC's MAC is available at render time — the `networkd` role runs
+  first as a dependency and gathers the `network` subset. A `set_fact` resolves
+  it and an assert fails the run if it comes back empty, rather than staging a
+  `.netdev` that systemd would refuse to load.
+- `ClientIdentifier=mac` was included rather than held back as a contingency.
+  networkd defaults to `ClientIdentifier=duid` and derives that DUID from
+  `/etc/machine-id`, so a matching MAC on its own would still present a new
+  identifier after a rebuild — precisely the Stage 0 case this is meant to fix.
+
+**Still to prove.** Whether the DHCP server returns the prior lease. The first
+boot after this lands changes the host's DHCP identity, so the address should be
+expected to move once and then hold. Have console access available for it.
 
 ---
 

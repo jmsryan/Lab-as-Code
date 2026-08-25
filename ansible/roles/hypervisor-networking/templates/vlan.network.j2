@@ -11,3 +11,13 @@ DHCP=ipv4
 # happens — see the TODO at the top of roles/security/defaults/main.yml.
 # Flip to yes in the same change that adds v6 firewall rules.
 IPv6AcceptRA=no
+
+[DHCPv4]
+# Identify by MAC alone. Pinning the bridge MAC is not sufficient by itself:
+# networkd defaults to ClientIdentifier=duid, and its DUID is derived from
+# /etc/machine-id, so it differs from the identifier dhcpcd sent before the
+# cutover and differs again after any rebuild. Keying on the MAC is what
+# actually holds the lease stable across both.
+# Per systemd.network(5) ClientIdentifier=:
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.network.html
+ClientIdentifier=mac

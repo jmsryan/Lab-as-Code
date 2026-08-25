@@ -34,6 +34,29 @@
   ansible.builtin.set_fact:
     net_allowed_vlans_sorted: "{{ net_allowed_vlans_normalized | sort }}"
 
+- name: Resolve the physical NIC's MAC address
+  # Pinned onto the bridge netdev (templates/bridge.netdev.j2) so the bridge
+  # stops presenting a randomly generated address to DHCP. The networkd role
+  # runs first as a dependency and gathers the network subset, so the fact is
+  # already populated here. Fact keys replace dots and dashes in interface
+  # names with underscores, so the raw inventory value cannot be used as a key.
+  ansible.builtin.set_fact:
+    net_phys_mac: >-
+      {{ (ansible_facts[net_phys_iface | replace('.', '_') | replace('-', '_')]
+          | default({})).macaddress | default('') }}
+
+- name: Assert the physical NIC's MAC address was resolved
+  # An empty MACAddress= renders a .netdev that systemd refuses to load, and
+  # that failure would not surface until the cutover, with the host already
+  # unreachable. Fail here instead, while nothing has been staged.
+  ansible.builtin.assert:
+    that:
+      - net_phys_mac | length > 0
+    fail_msg: >
+      Could not read the MAC address of {{ net_phys_iface }} from gathered
+      network facts. Check that net_phys_iface names a real interface on this
+      host.
+
 - name: Ensure /etc/systemd/network exists
   ansible.builtin.file:
     path: /etc/systemd/network

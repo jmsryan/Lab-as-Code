@@ -3,6 +3,15 @@
 [NetDev]
 Name={{ net_bridge_name }}
 Kind=bridge
+# Pin the bridge to the physical NIC's address. systemd-networkd otherwise
+# generates a random MAC when it creates the netdev, and because the address is
+# set explicitly at creation the kernel's usual behaviour (a bridge adopting its
+# first enslaved port's address) never applies. The VLAN subinterface inherits
+# this address, so DHCP sees the same client across the cutover instead of
+# issuing a new lease and renumbering the host mid-play.
+# Per systemd.netdev(5) MACAddress=:
+# https://www.freedesktop.org/software/systemd/man/latest/systemd.netdev.html
+MACAddress={{ net_phys_mac }}
 
 [Bridge]
 VLANFiltering=yes
