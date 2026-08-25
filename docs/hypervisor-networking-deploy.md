@@ -81,7 +81,8 @@ Optional behavior flags:
 - The role restarts `systemd-networkd` and ends the play if networking changes.
 
 4) **Reconnect**
-- If the IP changes, re-run against the new address.
+- The bridge MAC is pinned to the physical NIC, so the lease is expected to hold.
+- Target the host by its FQDN rather than editing inventory if it does move.
 
 > Consider out-of-band access or console access before the apply step.
 
@@ -114,7 +115,7 @@ After applying:
 - Run playbook with `hypervisor_networking_apply: false` to stage configs
 - Review staged files under `/etc/systemd/network/`
 - Re-run with `hypervisor_networking_apply: true` to apply and restart networking
-- Reconnect at the new address if the IP changes
+- Reconnect by FQDN; the pinned bridge MAC is expected to hold the lease
 
 ---
 

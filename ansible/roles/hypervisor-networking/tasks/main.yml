@@ -265,10 +265,12 @@
 - name: Report that a reconnect is required
   ansible.builtin.debug:
     msg: >-
-      Networking is being cut over on {{ inventory_hostname }}. The host's
-      address will likely change, because the VLAN subinterface takes the
-      bridge's MAC rather than the physical NIC's and DHCP issues a new lease.
-      Find the new address, update inventory, and reconnect. If the host does
+      Networking is being cut over on {{ inventory_hostname }}. The bridge MAC
+      is pinned to {{ net_phys_iface }} and the DHCP client identifies by MAC,
+      so the host is expected to keep the lease it already has — but that has
+      not yet been proven across a real cutover, so be ready for the address to
+      move once. Inventory targets the permanent FQDN either way, so no
+      inventory edit is needed; allow a few seconds for DNS. If the host does
       not come back, recover from the console — there is no automatic rollback.
   when:
     - hypervisor_networking_apply | bool

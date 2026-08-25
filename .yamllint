@@ -1,0 +1,22 @@
+---
+# yamllint configuration. Used by Stage 1 CI (docs/roadmap.md) and runnable
+# locally with `yamllint .` from the repository root.
+#
+# Scope is *.yml / *.yaml only, which is yamllint's default. The cloud-init
+# seed is deliberately left out: its files are extensionless, and `user-data`
+# must open with the literal `#cloud-config` magic comment that yamllint's
+# `comments` rule rejects for having no space after the `#`. Linting the seed
+# would mean disabling the very rule that keeps it valid.
+# Per cloud-init's user-data format documentation:
+# https://cloudinit.readthedocs.io/en/latest/explanation/format.html
+
+extends: default
+
+ignore: |
+  ansible/inventory/
+
+rules:
+  # This repo deliberately favours long explanatory comments inside tasks over
+  # short lines. Surface them, but do not fail a run on style alone.
+  line-length:
+    level: warning

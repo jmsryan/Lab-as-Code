@@ -108,9 +108,11 @@ everything that touches a real host.
 **Blocked by:** nothing.
 
 The governing constraint: **no automation can drive a play that severs its own
-connection and requires a human to find the new address.** Today `site.yml`
-does exactly that at the networking cutover. Until it stops, "unattended" is
-not achievable at any layer above it.
+connection and then stops, requiring a human to resume it.** Today `site.yml`
+does exactly that at the networking cutover. Pinning the bridge MAC (step 2)
+removed the address hunt, but the play still ends at `meta: end_play`, so `kvm`
+never runs in the same pass. Until that stops, "unattended" is not achievable at
+any layer above it.
 
 Work, in order:
 
@@ -118,9 +120,13 @@ Work, in order:
    is the project's own validation bar. The runbook currently notes that a
    fresh host commonly needs two passes to converge; a third should be clean.
    Until that is true, CI has nothing meaningful to assert against.
-2. **Pin the bridge MAC to the physical NIC** so the cutover stops renumbering
-   the host. Written up in [future-work.md](future-work.md) — that remains the
-   canonical description; it is not duplicated here.
+2. **Pin the bridge MAC to the physical NIC** — **done 2026-08-24.** The bridge
+   netdev pins `MACAddress=` to the physical NIC and the VLAN `.network` sets
+   `ClientIdentifier=mac`, since networkd's default DUID is derived from
+   `/etc/machine-id` and would present a new identity after every rebuild.
+   Verified on the hypervisor: the NIC, the bridge, and the VLAN subinterface
+   now share one address. Not yet proven across an actual cutover — see
+   [future-work.md](future-work.md), which remains the canonical description.
 3. **Remove `meta: end_play` from the cutover** once the connection survives it,
    and let the role verify in-run instead of deferring to a reconnect.
 4. **Flip `hypervisor_networking_apply` to `true`** by default. This is the last
@@ -142,6 +148,13 @@ no network path to the lab. Gate pull requests on it.
 This is deliberately first among the CI work because it is free — it requires
 none of the decisions the later stages hinge on — and because every subsequent
 stage is safer to iterate on once broken YAML cannot reach `main`.
+
+**Status.** `.github/workflows/static-validation.yml` landed 2026-08-24, running
+`yamllint`, `ansible-lint`, and `ansible-playbook --syntax-check` on every push
+to `main` and every pull request. All three pass against the current tree. Two
+things remain before this stage closes: the workflow has not yet executed on
+GitHub, and *gating* needs a branch protection rule on `main` requiring the
+`Lint and syntax` check — a repository setting, not a file that can live here.
 
 **Honest limit:** `--check` against a real host is *not* in this stage. Check
 mode needs inventory, credentials, and a route to the lab, all of which arrive

@@ -1,0 +1,63 @@
+---
+name: Static Validation
+
+# Stage 1 of docs/roadmap.md: the validation that needs no lab access. No
+# secrets, no inventory, and no network path to the hypervisor — everything
+# here runs against the repository alone on a GitHub-hosted runner.
+#
+# Deliberately NOT in this workflow: `ansible-playbook --check` against a real
+# host. Check mode needs inventory, credentials, and a route to the lab, none
+# of which exist at this stage. Static validation catches syntax and lint, not
+# behaviour.
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: Lint and syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install tooling
+        # ansible-lint is pinned to the series in use locally so a new lint
+        # release cannot fail an unrelated pull request; bump it deliberately.
+        # ansible-core is left to ansible-lint's own resolver, which pins a
+        # compatible version — pinning both independently just creates
+        # conflicts at install time.
+        run: pip install ansible-core "ansible-lint~=26.6" "yamllint~=1.38"
+
+      - name: Install Ansible collections
+        # The roles address community.libvirt and ansible.posix by FQCN, so
+        # both ansible-lint and --syntax-check need them resolvable.
+        working-directory: ansible
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: yamllint
+        # Run from the root: .yamllint lives there and covers docs/ too.
+        run: yamllint .
+
+      - name: ansible-lint
+        # Run from ansible/, where .ansible-lint and ansible.cfg are discovered.
+        working-directory: ansible
+        run: ansible-lint
+
+      - name: Playbook syntax check
+        # inventory/ is gitignored, so the runner has none. --syntax-check
+        # parses the playbook and every role it pulls in without needing a
+        # host, so the "no inventory was parsed" warnings here are expected.
+        working-directory: ansible
+        run: ansible-playbook site.yml --syntax-check

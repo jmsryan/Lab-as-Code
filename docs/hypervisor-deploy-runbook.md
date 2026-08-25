@@ -61,8 +61,8 @@ first Phase 2 run reach the host by overriding the connection target on the
 command line — `-e ansible_host=<bootstrap-fqdn>` — instead of writing a
 transient value into inventory. Once Phase 2.5 confirms the permanent name
 resolves, the override is dropped and every command after that (including
-the optional, deferred Phase 3 IP move, where dnsmasq re-points the same A
-record to the new lease) just uses plain `ansible-playbook site.yml`. Net
+the deferred Phase 3 cutover, where dnsmasq re-points the same A record if
+the lease moves at all) just uses plain `ansible-playbook site.yml`. Net
 result: **zero** inventory edits across the whole rebuild.
 
 ```
@@ -85,7 +85,7 @@ Phase 3    Networking cutover to the bridge (RISKY — needs console/OOB)
   │     └─ gate: staged 10-<iface>.network is DHCP-only (direct change proof)
   ├─ apply:  --tags networking  -e hypervisor_networking_apply=true
   ├─ reconnect on br0.<vlan> — SAME FQDN, no inventory edit (dnsmasq re-points A)
-  │     └─ the IP DOES change: br0.<vlan> uses the bridge MAC, so DHCP issues a new lease
+  │     └─ the IP should HOLD: bridge MAC pinned to the NIC + ClientIdentifier=mac (unproven)
   └─ if it does not come back: recover from the console — there is no automatic rollback
 Phase 4    Post-migration DNS re-verification
   └─ host still resolves names via dnsmasq AND is itself resolvable by system_hostname
@@ -362,16 +362,17 @@ cutover is too late.
 ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=true
 ```
 
-The role restarts `systemd-networkd` and ends the play, warning that the IP may
-change.
+The role restarts `systemd-networkd` and ends the play.
 
 ### 3. Reconnect
 
-The host is now DHCP on `br0.<vlan>` and its lease IP changes. Because inventory
-already targets the `system_hostname` FQDN (set in Phase 2), **no inventory edit
-is needed** — dnsmasq re-points the A record to the new lease and re-runs resolve
-automatically. Allow a few seconds for the new lease / DNS update before
-reconnecting.
+The host is now DHCP on `br0.<vlan>`. The bridge MAC is pinned to the physical
+NIC and the DHCP client identifies by MAC, so it is expected to keep the lease it
+already had — but that has not yet been exercised on a real cutover, so be ready
+for the address to move once. Either way inventory already targets the
+`system_hostname` FQDN (set in Phase 2), so **no inventory edit is needed** —
+dnsmasq re-points the A record if the lease moves. Allow a few seconds for DNS
+before reconnecting.
 
 > **On macOS, `dig` is not a valid check here.** `dig` queries the nameserver
 > directly and bypasses mDNSResponder, which is the cache `ssh` and Ansible
