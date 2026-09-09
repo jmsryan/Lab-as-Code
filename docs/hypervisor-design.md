@@ -156,6 +156,10 @@ This specification is **implementation-agnostic** and intentionally omits enviro
 
 ## 8. Host Security Controls
 
+> **Status:** the firewall requirements below are **not yet implemented**. The
+> `security` role currently covers SSH hardening and root account policy only.
+> See `docs/README.md` for current state.
+
 - Host firewall configured with:
   - default deny inbound policy
   - explicit allow rules for management access
@@ -165,6 +169,9 @@ This specification is **implementation-agnostic** and intentionally omits enviro
 ---
 
 ## 9. Update & Maintenance Strategy
+
+> **Status:** **not yet implemented.** No automatic update mechanism is
+> configured on the host.
 
 - Automatic installation of security updates only
 - No unattended feature upgrades

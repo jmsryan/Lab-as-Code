@@ -69,7 +69,10 @@ The `ansible/site.yml` playbook applies these roles in order to the `hypervisor`
 
 1. **identity** — permanent hostname and system identity (replaces cloud-init bootstrap identity)
 2. **baseline** — base packages and OS configuration
-3. **security** — firewall (default-deny inbound), SSH hardening, unattended security updates
+3. **security** — SSH hardening (authoritative `sshd_config`, SSH restricted to
+   `svc-ansible`, `PermitRootLogin no`) and root account policy. A host firewall and
+   unattended security updates are design intent in `docs/hypervisor-design.md`
+   §8-9 but are **not implemented**; see `docs/README.md` for current state.
 4. **hypervisor-networking** — configures a VLAN-aware Linux bridge (`br0`) with the physical NIC enslaved; stages configs under `/etc/systemd/network/`; apply is gated behind `hypervisor_networking_apply: false` by default
 
 **networkd** is not listed in `site.yml`. It is a dependency of `hypervisor-networking` (`roles/hypervisor-networking/meta/main.yml`), which passes it `networkd_stage_primary: false` and `networkd_apply: false`. Listing it separately would invoke it a second time with different parameters — Ansible only deduplicates a role when its parameters match — and that run would stage a `10-<iface>.network` competing with the bridge config. Dependencies inherit the parent's tags, so it carries `networking` exactly as its parent does.
