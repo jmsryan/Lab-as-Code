@@ -14,10 +14,15 @@ is self-contained and includes its own DHCP-DNS registration proof (Phase
 and 4 cover that migration; they are implemented but **not yet validated on
 real hardware**, and are optional/deferred until bridge work resumes.
 
-**Status:** Phases 0-2.5 (the full MVP path) have been run end-to-end on real
-hardware and confirmed working, including the Phase 2.5 DNS registration
-checkpoint. Phases 3-4 (bridge/VLAN) remain implemented-but-unvalidated, as
-above.
+**Status:** Phases 0-2.5 (the full MVP path) meet the project's validation
+bar. On 2026-09-29 the host was reinstalled from a wiped disk and taken through
+every gate in this runbook, in order: the first `site.yml` run converged with
+no failures, the second made zero changes, and after the Phase 2.5 reboot a
+run against the permanent FQDN, with no override, also made zero changes.
+Root login was refused over SSH and accepted at the console, confirming the
+break-glass path.
+Phases 3-4 (bridge/VLAN) remain implemented-but-unvalidated, as above; that run
+staged the bridge config but did not cut over.
 
 This runbook drives the existing guides rather than restating them:
 
@@ -187,17 +192,29 @@ name:
 
 ```bash
 cd ansible
-ansible-playbook site.yml --check -e ansible_host=<bootstrap-fqdn>    # dry run
 ansible-playbook site.yml -e ansible_host=<bootstrap-fqdn>            # apply
-ansible-playbook site.yml -e ansible_host=<bootstrap-fqdn>            # apply again
+ansible-playbook site.yml -e ansible_host=<bootstrap-fqdn>            # apply again — expect changed=0
 ```
 
-> **Run this twice.** On a freshly bootstrapped host, some `kvm`-role tasks
-> depend on state this same run just created (packages just installed,
-> `libvirtd` just started/enabled) and don't fully converge on the first
-> pass — they show as skipped or incomplete, then complete on the second
-> run. This is expected, not a bug; a third run should then show zero
-> changes. See "Optional Regression" below.
+> **No `--check` dry run on a fresh host.** It fails at the first `apt` task
+> with `python3-apt must be installed to use check mode`. A real run installs
+> `python3-apt` on demand; check mode will not. Once the first real run has
+> completed, `--check` works normally.
+
+> **Run this twice.** The second run is the convergence proof and should
+> report `changed=0`. On the 2026-09-29 rebuild every role, `kvm` included,
+> converged on the first pass. Earlier rebuilds saw some `kvm`-role tasks
+> depend on state the same run had just created (packages just installed,
+> `libvirtd` just started) and only complete on the second pass, with a third
+> run clean. Either outcome is acceptable; a change on the *last* run is not.
+> See "Optional Regression" below.
+
+> **A `sftp transfer mechanism failed` warning on the first run is expected.**
+> It comes from the one-line `sshd_config` cloud-init leaves behind, which
+> `security` replaces mid-run (see `docs/implementation-notes.md`,
+> 2026-09-29). Ansible reuses its SSH connection for 60 seconds, so the warning
+> can also appear on a run started immediately afterwards. It must not appear
+> on a run started from a fresh connection.
 
 > If you deliberately set `system_hostname` equal to the cloud-init bootstrap
 > name (e.g. both `hv-01`), the permanent name already resolves and you can
@@ -285,6 +302,12 @@ resolvectl query <system_hostname>
 Either resolves to the host's current lease IP — proof that `identity`'s
 hostname change and dhclient's `send host-name` config actually registered
 with dnsmasq.
+
+Then drop the override and run the playbook once more:
+
+```bash
+ansible-playbook site.yml    # expect changed=0, reaching the host by its permanent FQDN
+```
 
 **MVP ends here — confirmed working end-to-end on real hardware.** Phases 3
 and 4 below are optional, deferred bridge/VLAN work — skip them unless
@@ -513,11 +536,11 @@ From another host or the router:
 
 ## Optional Regression
 
-- Idempotency: on a freshly bootstrapped host, Phase 2's first-run
-  convergence commonly takes **two** `site.yml` runs (see the note under
-  Phase 2) — a *third* run should then make zero changes across `identity`,
-  `baseline`, `security`, and `kvm`. On an already-converged host, a single
-  re-run making zero changes is the expected result.
+- Idempotency: on a freshly bootstrapped host, the run after Phase 2's
+  convergence should make zero changes across every role (see the note under
+  Phase 2 — convergence has taken one pass, and on earlier rebuilds two). On
+  an already-converged host, a single re-run making zero changes is the
+  expected result.
 - Cutover reboot test — covers the optional/deferred Phase 3 machinery
   specifically, not the MVP path. After a successful cutover, reboot the host
   and confirm it comes back on `br0.<vlan>` with one default route and no
@@ -528,9 +551,13 @@ From another host or the router:
 
 ## Common Pitfalls
 
-- **Only ran `site.yml` once on a fresh host** → some `kvm`-role tasks depend
-  on state that same run just created and show as skipped/incomplete rather
-  than converged. Run it twice on first convergence (see Phase 2).
+- **Only ran `site.yml` once on a fresh host** → there is no evidence it
+  converged, and on some rebuilds `kvm`-role tasks depending on state that
+  same run created are left incomplete. Run it twice and expect `changed=0`
+  on the second (see Phase 2).
+- **Ran `--check` first on a fresh host** → fails with `python3-apt must be
+  installed to use check mode`. Not a role bug; skip the dry run until after
+  the first real run.
 - **Skipped Phase 2.5, or rebooted/renewed and then didn't wait for it** →
   dnsmasq still resolves the *old* hostname (or nothing). Without a manual
   reboot/renewal, the DHCP client won't re-send the new hostname until the

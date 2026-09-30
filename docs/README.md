@@ -69,13 +69,21 @@ What is implemented in the repository versus what has been proven on real
 hardware. "Validated" means the project's bar: a fresh install converges with
 zero changes on a second run.
 
+**Last full rebuild: 2026-09-29.** Wiped disk → Debian install → cloud-init →
+`site.yml`, following the runbook through every gate from Phase 0 to Phase 2.5.
+First run: no failures. Second run: `changed=0`. After the Phase 2.5 reboot, a
+run against the permanent FQDN with no override: `changed=0`. Root was refused
+over SSH and accepted at the console. The "Yes" rows below were all exercised
+by that rebuild.
+
 | Component | Implemented | Validated on hardware | Notes |
 |---|---|---|---|
 | cloud-init bootstrap | Yes | Yes | Runbook Phase 0 |
 | `identity` role | Yes | Yes | Hostname, DHCP option 12, `svc-ansible`, prunes other human accounts |
 | `baseline` role | Yes | Yes | Timezone, base packages, chrony |
-| `security` role | **Partial** | Partial | SSH hardening and root-account policy only — see gaps below |
+| `security` role | **Partial** | Yes, for what exists | Authoritative `sshd_config` and root-account policy validated; firewall and unattended updates not built — see gaps below |
 | `kvm` role | Yes | Yes | libvirt, storage pool, `virsh` without sudo; removes default NAT network |
+| DHCP-DNS registration | Yes | Yes | Runbook Phase 2.5: permanent name resolved via dnsmasq after reboot |
 | `networkd` migration | Yes | Once, manually | Legacy stack handoff; runs as a `hypervisor-networking` dependency |
 | `hypervisor-networking` bridge/VLAN | Yes | **No** | Cutover performed 2026-08-15 and survived a reboot, but has not met the idempotent-run bar |
 | Bridge MAC pinning | Yes | **No** | Applies only at next boot; netdev MAC is fixed at device creation. See future-work.md |
@@ -84,8 +92,9 @@ zero changes on a second run.
 
 ### Known gaps in the `security` role
 
-The role currently enforces SSH daemon configuration, restricts SSH to
-`svc-ansible`, and manages root's account lock. It does **not** yet implement:
+The role currently owns the whole `sshd_config` (templated, validated with
+`sshd -t`), restricts SSH to `svc-ansible`, and manages root's account lock. It
+does **not** yet implement:
 
 - **Host firewall.** No default-deny inbound policy exists. `hypervisor-design.md`
   §8 describes this as design intent, not current state.

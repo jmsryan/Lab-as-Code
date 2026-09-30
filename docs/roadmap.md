@@ -16,7 +16,8 @@ values and not dates.
 ## Release Status
 
 Pre-release v0.2.0 (August 13, 2026). The MVP hypervisor path (bootstrap →
-base convergence → DNS registration) is confirmed on real hardware. The
+base convergence → DNS registration) is confirmed on real hardware, most
+recently by a full rebuild from a wiped disk on 2026-09-29. The
 networking cutover to the VLAN-aware bridge has been performed manually and
 survives a reboot, but has not yet met the project's validation bar of a full
 idempotent run.
@@ -116,10 +117,12 @@ any layer above it.
 
 Work, in order:
 
-1. **A full `site.yml` run on a fresh install that reports zero changes.** This
-   is the project's own validation bar. The runbook currently notes that a
-   fresh host commonly needs two passes to converge; a third should be clean.
-   Until that is true, CI has nothing meaningful to assert against.
+1. **A full `site.yml` run on a fresh install that reports zero changes** —
+   **done 2026-09-29.** The host was reinstalled from a wiped disk; the first
+   `site.yml` run converged with no failures and the second reported
+   `changed=0`, as did a third after the DNS-registration reboot. Scope: the
+   default run, with `hypervisor_networking_apply: false`, so the bridge was
+   staged but not cut over. The cutover's idempotence is steps 2-4 below.
 2. **Pin the bridge MAC to the physical NIC** — **done 2026-08-24.** The bridge
    netdev pins `MACAddress=` to the physical NIC and the VLAN `.network` sets
    `ClientIdentifier=mac`, since networkd's default DUID is derived from

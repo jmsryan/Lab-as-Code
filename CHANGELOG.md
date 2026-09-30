@@ -1,3 +1,20 @@
+## Unreleased
+
+- Validates the MVP path from a wiped disk (2026-09-29): a fresh install taken
+  through every runbook gate, Phases 0-2.5, converged with no failures on the
+  first `site.yml` run and reported `changed=0` on the second, and again after
+  the DNS-registration reboot. Console-only root break-glass confirmed: root
+  refused over SSH, accepted at the console. Closes roadmap Stage 0 step 1 for the default
+  run (networking staged, not cut over).
+- `security` role: renders the whole `sshd_config` from a template, validated
+  with `sshd -t`, in place of patching the file. On a fresh host cloud-init
+  leaves a one-line `sshd_config` behind, so sshd had no sftp subsystem and
+  Ansible fell back to piped file transfer. See `docs/implementation-notes.md`.
+- Docs: the runbook drops the `--check` dry run on a fresh host (check mode
+  cannot install `python3-apt`); the bootstrap procedure no longer tells you
+  to `systemctl enable cloud-init` (the unit was renamed in cloud-init 24.3)
+  and covers the installer's "Volume group name already in use" stop.
+
 ## v0.2.0 - 2026-08-13 (pre-release)
 
 Scope: MVP hypervisor host. Hostname/DHCP-DNS registration, svc-ansible-only

@@ -108,6 +108,14 @@ to make sure a reused drive or host gets a genuinely clean first boot
   out of its home directory before that first run; the deletion is
   irreversible.
 - Configure networking using DHCP
+- Install to the intended system disk. If any disk still carries LVM from an
+  earlier install, guided partitioning can stop with **"Volume group name
+  already in use"**: it names the new volume group `<hostname>-vg`, and an old
+  install with the same hostname already holds that name. Choose **Go Back** →
+  **Manual** → **Configure the Logical Volume Manager** → **Delete volume
+  group** for each old group, then **Finish** and return to guided
+  partitioning. Deleting a volume group destroys every logical volume in it,
+  on whichever disk it lives.
 
 No additional software or configuration is performed during this step.
 
@@ -124,12 +132,19 @@ After the OS installation completes:
 
 - Log in locally using the temporary root credentials
 - Install the `cloud-init` package
-- Ensure cloud-init is enabled to run on next boot
+- Confirm cloud-init is enabled to run on next boot
 
 ```bash
 apt install cloud-init
-systemctl enable cloud-init
+systemctl is-enabled cloud-init-local cloud-init-main cloud-config cloud-final
+# expect: enabled (x4)
 ```
+
+The package enables its own units at install time; there is nothing to enable
+by hand. Do not run `systemctl enable cloud-init`: cloud-init 24.3 renamed
+`cloud-init.service` to `cloud-init-main.service`, and Debian 13 ships a later
+release, so that unit does not exist and the command fails with `Unit
+cloud-init.service does not exist`.
 
 This step prepares the system to consume the bootstrap configuration provided
 by the `CIDATA` media.
