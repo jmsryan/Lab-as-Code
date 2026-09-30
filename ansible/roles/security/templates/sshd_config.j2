@@ -1,0 +1,27 @@
+# This file is managed by Ansible (security role). Local edits are overwritten.
+#
+# Authoritative: this is the whole file, not a patch over whatever was there.
+# On a fresh host cloud-init applies `ssh_pwauth: false` before it installs
+# openssh-server, so it creates a one-line sshd_config; dpkg then keeps that
+# as a locally-modified conffile and parks the stock one at
+# sshd_config.ucf-dist. Patching the stub left sshd with no sftp subsystem.
+#
+# There is deliberately no `Include /etc/ssh/sshd_config.d/*.conf`. sshd takes
+# the first value it sees for most options, so a drop-in placed before these
+# lines would silently override them, and one placed after could still widen
+# list options like AllowUsers. Every directive lives here instead.
+
+# ---- Authentication policy ----
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+# PAM stays on for its account and session phases; with password and
+# keyboard-interactive auth off, it cannot be used to authenticate.
+UsePAM yes
+AllowUsers {{ security_ssh_allow_users | join(' ') }}
+
+# ---- Debian defaults carried over from the stock sshd_config ----
+PrintMotd no
+AcceptEnv LANG LC_* COLORTERM NO_COLOR
+Subsystem sftp /usr/lib/openssh/sftp-server
