@@ -2,7 +2,6 @@
 all:
   hosts:
     hypervisor:
-      # Required for the MVP path (identity, baseline, security, kvm).
       # ansible_host is always an FQDN, never a static/DHCP-lease IP — set it
       # to the PERMANENT name (system_hostname's domain), not the cloud-init
       # bootstrap name. Until the identity role has run once and Phase 2.5's
@@ -14,9 +13,10 @@ all:
       system_hostname: "<HOSTNAME>"
       system_timezone: "<TIMEZONE>"
 
-      # Only required if/when running the optional, deferred bridge/VLAN
-      # migration (--tags networking; see docs/hypervisor-deploy-runbook.md
-      # Phase 3). Omit these entirely for an MVP-only host.
+      # Required on every run. A default site.yml run stages the bridge
+      # config, and hypervisor-networking asserts all four are defined. The
+      # cutover itself stays off unless hypervisor_networking_apply=true (see
+      # docs/hypervisor-deploy-runbook.md Phase 3).
       net_phys_iface: "<NIC_NAME>"
       net_bridge_name: "br0"
       net_server_vlan: <VLAN_ID>

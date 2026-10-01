@@ -28,13 +28,12 @@ An example file (with placeholders only) lives at:
 all:
   hosts:
     hypervisor:
-      # Required for the MVP path (identity, baseline, security, kvm)
       ansible_host: "<PERMANENT_FQDN>"
       system_hostname: "<HOSTNAME>"
       system_timezone: "<TIMEZONE>"
 
-      # Only required for the optional, deferred bridge/VLAN migration
-      # (--tags networking) — omit for an MVP-only host
+      # Required on every run: a default site.yml run stages the bridge
+      # config, and hypervisor-networking asserts these are defined
       net_phys_iface: "<NIC_NAME>"
       net_bridge_name: "br0"
       net_server_vlan: <VLAN_ID>
@@ -55,7 +54,7 @@ all:
   Phases 1, 2, and 2.5 for the exact sequence.
 - `system_hostname` and `system_timezone` are used by the base roles
 - `system_hostname` is also what the DHCP client advertises upstream, so it's what the network's DNS (dnsmasq) resolves the host by — after a hostname change, this only takes effect once the DHCP lease is renewed (reboot, or manual renewal from console); see `docs/hypervisor-deploy-runbook.md` Phase 2.5
-- `net_phys_iface`, `net_bridge_name`, `net_server_vlan`, `net_allowed_vlans` are only consumed by the optional, deferred `hypervisor-networking` role (`--tags networking`) — not needed for the MVP path
+- `net_phys_iface`, `net_bridge_name`, `net_server_vlan`, `net_allowed_vlans` are consumed by `hypervisor-networking`, which runs on every default `site.yml` run to stage the bridge config (the cutover itself stays gated on `hypervisor_networking_apply`). The role asserts all four, so a run fails without them
 - `net_phys_iface` must be the physical NIC name (e.g., `eno1`)
 - `net_bridge_name` defaults to `br0` but can be changed
 - `net_server_vlan` is the host's own VLAN (PVID)

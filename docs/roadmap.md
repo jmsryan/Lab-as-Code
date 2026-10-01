@@ -367,6 +367,8 @@ host, tiers.
 | Self-hosted runner vs. Tailscale | Stage 5 | determines whether Seam B exists |
 | Guest platform scope | Stage 4 | reconciles README against `hypervisor-design.md` §2 |
 | Dev environment tiers (ADR-0002) | Before Stage 3 | see "Planned Decision" above |
+| Cutover handoff ordering | Next cutover | suspected address drop via `ifdown`; see future-work.md |
+| DNS after the cutover | Next cutover | no resolver consumes DHCP DNS once networkd owns the NIC; see future-work.md |
 
 ---
 

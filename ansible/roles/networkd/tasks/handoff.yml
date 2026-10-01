@@ -102,12 +102,15 @@
   # is how a host ends up with dhcpcd on the enslaved NIC and systemd-networkd
   # on the bridge, both holding leases, unreachable on either.
   #
-  # `dhcpcd -x` is the graceful form (it releases the lease); pkill is the
-  # backstop. The pgrep is the authority — this task must fail loudly rather
-  # than let the cutover continue with a second DHCP client alive.
+  # `dhcpcd -x` asks the daemon to exit; it does not release the lease (that
+  # is `-k`). pkill is the backstop. The pgrep is the authority — this task
+  # must fail loudly rather than let the cutover continue with a second DHCP
+  # client alive.
   #
-  # Failing here is safe: systemd-networkd has not been restarted yet, so the
-  # NIC is not enslaved and the host keeps its current address.
+  # The host keeps its address through this only because Debian's
+  # /etc/dhcpcd.conf sets `persistent`; without it dhcpcd de-configures the
+  # interface on exit (dhcpcd(8)). The ifup stop above may already have run
+  # `dhcpcd -k` via ifdown — see docs/future-work.md before the next cutover.
   ansible.builtin.shell: |
     dhcpcd -x "{{ networkd_primary_iface }}" 2>/dev/null
     dhcpcd -x 2>/dev/null

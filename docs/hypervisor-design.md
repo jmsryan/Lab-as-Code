@@ -148,6 +148,9 @@ This specification is **implementation-agnostic** and intentionally omits enviro
 
 ## 7. Secure Remote Access
 
+> **Status:** **not yet implemented.** No overlay networking client is
+> installed on the host.
+
 - Overlay networking client installed on hypervisor
 - Used exclusively for management access
 - No application traffic exposed via overlay by default

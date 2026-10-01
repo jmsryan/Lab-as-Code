@@ -90,10 +90,11 @@ by that rebuild.
 | `security` role | **Partial** | Yes, for what exists | Authoritative `sshd_config` and root-account policy validated; firewall and unattended updates not built — see gaps below |
 | `kvm` role | Yes | Yes | libvirt, storage pool, `virsh` without sudo; removes default NAT network |
 | DHCP-DNS registration | Yes | Yes | Runbook Phase 2.5: permanent name resolved via dnsmasq after reboot |
-| `networkd` migration | Yes | Once, manually | Legacy stack handoff; runs as a `hypervisor-networking` dependency |
-| `hypervisor-networking` bridge/VLAN | Yes | **No** | Cutover performed 2026-08-15 and survived a reboot, but has not met the idempotent-run bar |
-| Bridge MAC pinning | Yes | **No** | Applies only at next boot; netdev MAC is fixed at device creation. See future-work.md |
+| `networkd` migration | Yes | **No** | Legacy stack handoff; runs as a `hypervisor-networking` dependency. A suspected ordering defect blocks the next cutover — see future-work.md |
+| `hypervisor-networking` bridge/VLAN | Yes | Staged only | The 2026-09-29 rebuild staged the bridge config and did not cut over. A cutover on the previous install (2026-08-15) survived a reboot |
+| Bridge MAC pinning | Yes | **No** | On this install the pin applies at the cutover, since no bridge exists yet. See future-work.md |
 | Terraform VM lifecycle | No | — | Roadmap Stage 3; not in the repo |
+| Overlay network client | No | — | `hypervisor-design.md` §7 is design intent |
 | CI (static validation) | Yes | Yes | Lint and syntax only, no lab access. Roadmap Stage 1 |
 
 ### Known gaps in the `security` role

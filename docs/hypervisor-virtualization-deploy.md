@@ -37,9 +37,11 @@ This guide assumes the architectural intent described in:
 ### Host OS
 
 - Debian 12 (bookworm) or newer
-- The `hypervisor-networking` role has already run successfully and `br0`
-  is up
 - The host has a working APT mirror
+
+`br0` is **not** a prerequisite for this role: it installs and configures
+libvirt without touching networking, and converges on a host that has not
+cut over. Guests need `br0` to attach to, which is Terraform's concern.
 
 ### Ansible controller
 
@@ -66,7 +68,7 @@ sensible for a single-host MVP.
 These variables can be overridden in inventory or via `-e`:
 
 - `kvm_admin_users` — list of users added to the `libvirt` and `kvm`
-  groups. Defaults to `[ansible_user]`.
+  groups. Defaults to `[svc-ansible]`.
 - `kvm_storage_pool_name` — libvirt pool name. Defaults to `default`.
 - `kvm_storage_pool_path` — filesystem path backing the pool. Defaults to
   `/var/lib/libvirt/images`.
@@ -85,9 +87,12 @@ does not change networking, and is fully idempotent on re-run.
 
 ```bash
 cd ansible
-ansible-playbook site.yml --tags kvm --check
 ansible-playbook site.yml --tags kvm
 ```
+
+Skip `--check` on a fresh host: it fails at the first `apt` task with
+`python3-apt must be installed to use check mode`. It works normally once a
+real run has completed.
 
 ### Subsequent runs
 
@@ -108,7 +113,9 @@ sudo.
 
 After applying:
 
-- `systemctl is-active libvirtd` returns `active`
+- `systemctl is-active libvirtd.socket` returns `active`. `libvirtd` itself
+  is socket-activated and exits after two minutes idle, so `inactive` there is
+  normal
 - `ls /dev/kvm` exists and is readable by the `kvm` group
 - `virsh pool-list --all` shows the `default` pool as **active** and
   **autostart enabled**
@@ -132,18 +139,17 @@ After applying:
 - **Default NAT network unexpectedly present** → either
   `kvm_disable_default_network` was set to `false`, or a previous run
   failed before reaching the cleanup task. Re-run.
-- **Unable to attach VMs to `br0`** → host networking has not converged.
-  Run `--tags networking` first per `hypervisor-networking-deploy.md`.
+- **Unable to attach VMs to `br0`** → the bridge is staged but the host has
+  not cut over. See `hypervisor-deploy-runbook.md` Phase 3.
 
 ---
 
 ## Quickstart Checklist
 
-- Confirm `hypervisor-networking` has run and `br0` is up
 - Confirm `/dev/kvm` exists on the host
 - `ansible-galaxy collection install -r requirements.yml` on the controller
-- `ansible-playbook site.yml --tags kvm --check` to dry-run
-- `ansible-playbook site.yml --tags kvm` to apply
+- `ansible-playbook site.yml --tags kvm` to apply (`--check` only after a
+  first real run)
 - Log out and back in as the admin user before using `virsh`
 - Validate with `virsh pool-list --all` and `virsh net-list --all`
 

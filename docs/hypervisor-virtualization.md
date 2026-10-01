@@ -76,8 +76,8 @@ the management API.
 This pairing is chosen because it is:
 - shipped and maintained in the Debian base repositories
 - the de facto standard for Linux virtualization in homelab and production
-- supported by the `dmacvicar/libvirt` Terraform provider used elsewhere in
-  this repository
+- supported by the `dmacvicar/libvirt` Terraform provider planned for the
+  VM layer (not yet in this repository)
 - inspectable and scriptable through `virsh` without any vendor tooling
 
 No alternative hypervisor (Xen, VMware, Proxmox) is layered on top. The
@@ -226,7 +226,8 @@ boundaries:
 
 - **cloud-init**
   - does not install or configure the virtualization stack
-  - exists only on guests, not for hypervisor convergence
+  - bootstraps the hypervisor only far enough for Ansible to reach it, and
+    will do the same for guests
 
 - **Ansible**
   - installs the KVM/libvirt packages

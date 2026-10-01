@@ -30,8 +30,9 @@ This guide assumes the architectural intent described in:
 
 ### Host OS expectations
 - `systemd-networkd` is installed and available
-- `NetworkManager` and `ifupdown` are **not** actively managing interfaces
 - The host has basic DHCP connectivity on the infrastructure VLAN
+- Whatever manages networking today (ifupdown + dhcpcd, or NetworkManager) is
+  expected: the `networkd` dependency's handoff stops it at the cutover
 
 > DHCP-only on the server VLAN is an intentional design choice. DNS and
 > hostname resolution are provided by the upstream DHCP server (dnsmasq);
@@ -101,7 +102,8 @@ After applying:
 ## Common Pitfalls
 
 - **No DHCP on server VLAN** → host never receives an IP address
-- **NetworkManager active** → `networkd` role aborts safely
+- **Primary interface is already a bridge, bond, or VLAN** → `networkd`
+  refuses to migrate and fails before touching anything
 - **Forgot to enable apply** → configs staged but no changes on the host
 - **Cleanup enabled on a host with other networkd configs** → unexpected deletions
 

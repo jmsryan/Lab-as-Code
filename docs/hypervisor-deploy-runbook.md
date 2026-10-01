@@ -41,9 +41,10 @@ This runbook drives the existing guides rather than restating them:
 - The MVP path is `identity` → `baseline` → `security` → `kvm` (Phases 0-2.5)
   — a solid hostname/DHCP/sudo/break-glass posture with no bridge/VLAN work.
   **Confirmed working end-to-end on real hardware.**
-- `networkd` and `hypervisor-networking` (Phases 3-4) are covered too, but are
-  optional and deferred: built and gated behind `--tags networking`, not
-  required for MVP, and not yet exercised against real hardware.
+- `networkd` and `hypervisor-networking` stage the bridge config on every run
+  (Phase 2). The cutover itself (Phases 3-4) is optional and deferred: gated on
+  `-e hypervisor_networking_apply=true`, not required for MVP, and not yet
+  validated on this install.
 - Does **not** cover VM creation (Terraform, a later release).
 - Assumes the architectural intent in `docs/hypervisor-design.md` and
   `docs/automation-boundaries.md`.
@@ -78,8 +79,8 @@ Phase 1    Controller prep (inventory ansible_host = permanent FQDN, unresolved 
 Phase 2    Base convergence (identity → baseline → security → hypervisor-networking → kvm)
   ├─ networking roles RUN here now, but only stage — apply is gated off by default
   ├─ run with -e ansible_host=<bootstrap-fqdn> (permanent name doesn't resolve yet)
-  ├─ identity sets system_hostname → deletes the installer's personal sudo user → ensures dhclient sends hostname
-  └─ gate: hostname == system_hostname ; ping still pong ; chrony/libvirtd active ;
+  ├─ identity sets system_hostname → deletes the installer's personal sudo user → ensures the DHCP client sends hostname
+  └─ gate: hostname == system_hostname ; ping still pong ; chrony + libvirtd.socket active ;
            /dev/kvm ; virsh pool-list default active
 Phase 2.5  DNS registration checkpoint (MVP's DNS proof — no bridge required)
   ├─ reboot host (or renew DHCP lease from console) so dnsmasq re-registers the new name
@@ -87,7 +88,7 @@ Phase 2.5  DNS registration checkpoint (MVP's DNS proof — no bridge required)
 ── MVP complete here; networking below is now in scope ────────────────────
 Phase 3    Networking cutover to the bridge (RISKY — needs console/OOB)
   ├─ stage already happened in Phase 2; re-run to confirm it is a no-op
-  │     └─ gate: staged 10-<iface>.network is DHCP-only (direct change proof)
+  │     └─ gate: exactly the five approved units staged, no static addressing
   ├─ apply:  --tags networking  -e hypervisor_networking_apply=true
   ├─ reconnect on br0.<vlan> — SAME FQDN, no inventory edit (dnsmasq re-points A)
   │     └─ the IP should HOLD: bridge MAC pinned to the NIC + ClientIdentifier=mac (unproven)
@@ -145,10 +146,10 @@ by name immediately, before any Ansible run.
    `hypervisor.<your-domain>`), not the cloud-init bootstrap name. It won't
    resolve yet; that's expected, and you never edit this file again for
    naming reasons. Also set `system_hostname` and `system_timezone` — that's
-   everything the MVP path (Phases 0-2.5) needs. `net_phys_iface`,
-   `net_bridge_name`, `net_server_vlan`, and `net_allowed_vlans` are only
-   required if/when you run the optional, deferred Phase 3
-   (`--tags networking`).
+   `net_phys_iface`, `net_bridge_name`, `net_server_vlan`, and
+   `net_allowed_vlans` too — Phase 2 stages the bridge config and
+   `hypervisor-networking` asserts all four, so the run fails without them,
+   even though the cutover is deferred to Phase 3.
 2. Install required collections:
 
    ```bash
@@ -222,8 +223,8 @@ ansible-playbook site.yml -e ansible_host=<bootstrap-fqdn>            # apply ag
 
 The `identity` role changes the host's name from the cloud-init bootstrap name
 to `system_hostname`, deletes the installer's personal sudo user (see
-`docs/hypervisor-bootstrap.md` Step 3), and ensures dhclient will advertise
-the new hostname on its next lease renewal. The `security` role hardens SSH
+`docs/hypervisor-bootstrap.md` Step 3), and ensures the DHCP client (dhcpcd
+on Debian 13) will advertise the new hostname on its next lease renewal. The `security` role hardens SSH
 and leaves root's console password untouched (break-glass).
 
 **Checkpoint:**
@@ -233,7 +234,10 @@ and leaves root's console password untouched (break-glass).
   (`ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>` → `pong`) —
   the permanent FQDN doesn't resolve yet. That's Phase 2.5, below, since it
   needs a DHCP lease renewal this playbook run deliberately doesn't force.
-- `systemctl is-active chrony libvirtd` reports both `active`.
+- `systemctl is-active chrony libvirtd.socket` reports both `active`. Check
+  the socket, not `libvirtd`: the daemon is socket-activated and exits after
+  two minutes idle, so `libvirtd` reading `inactive` on a converged host is
+  normal.
 - `/dev/kvm` exists.
 - `virsh pool-list --all` shows the `default` pool active with autostart on.
 - `virsh net-list --all` does **not** list the `default` NAT network.
@@ -269,7 +273,7 @@ and leaves root's console password untouched (break-glass).
 ## Phase 2.5 — DNS Registration Checkpoint (MVP)
 
 This is the MVP's DNS proof — it does not require the bridge/VLAN migration
-in Phase 3. `identity` set the new hostname and made sure dhclient is
+in Phase 3. `identity` set the new hostname and made sure the DHCP client is
 configured to advertise it, but the change only takes effect on the next
 DHCP lease renewal. Renewing automatically from within the same Ansible run,
 over the same interface Ansible is connected through, carries the same
@@ -280,10 +284,10 @@ this step is manual, from console/out-of-band, not part of `site.yml`:
 # on host, via console/OOB — NOT over the live Ansible SSH session:
 sudo reboot
 # — or, without a reboot —
-sudo dhclient -r <iface> && sudo dhclient <iface>
+sudo dhcpcd -n <iface>          # Debian 13 uses dhcpcd, not dhclient
 ```
 
-> **Don't just wait for it.** Left alone, dhclient only renews (and re-sends
+> **Don't just wait for it.** Left alone, the DHCP client only renews (and re-sends
 > the hostname) at the DHCP server's lease interval — commonly up to 24
 > hours, and it depends entirely on your DHCP server's configured lease
 > time. A reboot or the manual renewal above is the reliable way to get the
@@ -300,7 +304,7 @@ resolvectl query <system_hostname>
 ```
 
 Either resolves to the host's current lease IP — proof that `identity`'s
-hostname change and dhclient's `send host-name` config actually registered
+hostname change and the DHCP client's hostname option actually registered
 with dnsmasq.
 
 Then drop the override and run the playbook once more:
@@ -380,6 +384,10 @@ Phase 0 is accepted. This is the entire safety net; verifying it after the
 cutover is too late.
 
 ### 2. Apply (risky — restarts networkd)
+
+> **Blocked until resolved:** the handoff may drop the host's address before
+> systemd-networkd starts. See "The handoff may drop the host's address before
+> networkd starts" in `docs/future-work.md`.
 
 ```bash
 ansible-playbook site.yml --tags networking -e hypervisor_networking_apply=true
@@ -495,15 +503,19 @@ Phase 2.5 already proved DHCP-DNS registration works on the MVP path. This
 phase is a regression check that the same mechanism still holds after the
 Phase 3 bridge/VLAN move — not the introduction of DNS validation.
 
+> **Unsettled.** `systemd-resolved` is not installed on the host, and
+> systemd-networkd does not write `/etc/resolv.conf` itself, so after the
+> cutover nothing keeps it in step with DHCP. How the host should get DNS
+> after the cutover is an open decision — see "DNS after the cutover" in
+> `docs/future-work.md`. The checks below avoid `resolvectl` for that reason.
+
 On the host:
 
-- `resolvectl status` — the DNS server on `br0.<vlan>` is the dnsmasq/router IP
-  learned via DHCP; `/etc/resolv.conf` points at the systemd-resolved stub
-  (`127.0.0.53`), with nothing static pinned.
-- Forward resolution: `resolvectl query <known-lab-hostname>` resolves to an
+- `cat /etc/resolv.conf` — the nameserver is the dnsmasq/router IP, with
+  nothing static pinned. Note which tool says it generated the file.
+- Forward resolution: `getent hosts <known-lab-hostname>` resolves to an
   address.
-- Reverse resolution: `resolvectl query <a-lab-ip>` returns a name (dnsmasq
-  PTR).
+- Reverse resolution: `getent hosts <a-lab-ip>` returns a name (dnsmasq PTR).
 
 From another host or the router:
 
@@ -519,13 +531,14 @@ From another host or the router:
 - Phase 0: SSH by bootstrap name works; `hostname` = cloud-init `local-hostname`.
 - Phase 1: `ansible hypervisor -m ping -e ansible_host=<bootstrap-fqdn>` → `pong`.
 - Phase 2: `hostname` = `system_hostname`; ping still `pong` after the FQDN
-  switch; `chrony` and `libvirtd` active; `/dev/kvm` present; `default` pool
+  switch; `chrony` and `libvirtd.socket` active; `/dev/kvm` present; `default` pool
   active; no `default` NAT network; installer's personal user is gone;
   `ssh root@<host>` rejected while console root login and `ssh svc-ansible@<host>`
   both succeed.
 - Phase 2.5 (MVP complete here): after reboot/lease renewal, another host
   resolves `system_hostname` via dnsmasq.
-- Phase 3 (optional/deferred): staged `10-<iface>.network` is DHCP-only; bridge
+- Phase 3 (optional/deferred): exactly the five approved units staged, with no
+  static addressing; bridge
   and VLAN subif come up after apply; exactly one default route, on
   `br0.<vlan>`; `systemd-networkd` enabled and `networking` disabled.
 - Phase 4 (optional/deferred): host still resolves lab names via dnsmasq

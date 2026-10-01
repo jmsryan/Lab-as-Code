@@ -122,9 +122,8 @@ converge.
 that can: the failure lands on first boot, before Ansible has a network to
 arrive over. With the seed in place cloud-init never renders a network
 config, so there is no state for Ansible to correct — and no Ansible task
-enforces this, deliberately. Networking changes in this repo stay gated
-behind `--tags networking`; a remediation task in a default-run role would
-route around that gate to guard a condition that cannot recur.
+enforces this, deliberately: a permanent remediation task would exist only
+to guard a condition the seed already prevents from recurring.
 
 Hosts seeded before this file existed carry a stale
 `/etc/network/interfaces.d/50-cloud-init` and need a one-time manual

@@ -98,6 +98,8 @@ There is exactly **one** cutover. `hypervisor-networking` stages the bridge conf
 
 The handoff stops and disables `networking.service`, stops `ifup@<iface>.service`, masks the `ifup@.service` template so udev cannot re-trigger it, and stops the dhcpcd process directly — dhcpcd has no systemd unit on Debian 13. The dhcpcd step asserts no process survives and fails the play if one does; it runs before systemd-networkd is restarted, so failing there leaves the NIC un-enslaved and the host reachable.
 
+**Do not run the cutover until "The handoff may drop the host's address before networkd starts" in `docs/future-work.md` is resolved.** Stopping `ifup@<iface>` runs `ifdown`, whose DHCP teardown is `dhcpcd -k`, which de-configures the interface regardless of `persistent`.
+
 ### Cleanup Behavior
 
 `hypervisor_networking_cleanup: true` (default) removes any `/etc/systemd/network/*.network|*.netdev|*.link` files not created by the role. Backups are taken before deletion. Disable this when the host has other valid networkd configs.

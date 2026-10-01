@@ -1,5 +1,19 @@
 ## Unreleased
 
+- Docs audited against the code and the live host (2026-09-30; `site.yml
+  --check` reported `changed=0`). Corrected: the `net_*` inventory variables
+  are required on every run, not only for the cutover; networking is gated by
+  `hypervisor_networking_apply`, not by `--tags networking`; libvirt health is
+  checked on `libvirtd.socket`; lease renewal on Debian 13 is `dhcpcd -n`;
+  `br0` is not a prerequisite for the `kvm` role; design §7's overlay client is
+  marked unimplemented. Removed real MAC addresses and a VLAN ID from
+  `docs/future-work.md`.
+- `docs/future-work.md` records two blockers for the next cutover: the
+  handoff stops `ifup@<iface>`, whose `ifdown` runs `dhcpcd -k` and may drop
+  the address before systemd-networkd starts; and nothing keeps DNS in step
+  with DHCP once networkd owns the NIC. Corrected the `handoff.yml` comment
+  that said `dhcpcd -x` releases the lease.
+
 - Validates the MVP path from a wiped disk (2026-09-29): a fresh install taken
   through every runbook gate, Phases 0-2.5, converged with no failures on the
   first `site.yml` run and reported `changed=0` on the second, and again after
