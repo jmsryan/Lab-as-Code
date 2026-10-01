@@ -51,6 +51,12 @@ Follow these at a keyboard. Listed in execution order.
 | [ansible-inventory.md](ansible-inventory.md) | Required inventory variables and privacy guidance. `ansible/inventory/` is gitignored |
 | [ansible-inventory.example.yml](ansible-inventory.example.yml) | Placeholder-only template to copy |
 
+## Decisions — why it changed
+
+| Document | Scope |
+|---|---|
+| [adr/](adr/README.md) | Architecture Decision Records: one significant decision each, with context, options considered, and consequences |
+
 ## Planning — not yet built
 
 | Document | Scope |

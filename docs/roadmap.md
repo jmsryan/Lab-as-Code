@@ -136,6 +136,11 @@ Work, in order:
    step, not the first — flipping it before (2) and (3) only moves where the run
    stops, since the play would still end before the `kvm` role.
 
+> **Steps 3–4 superseded by [ADR-0001](adr/0001-staged-deployment.md).** The
+> cutover becomes its own gated stage, and `end_play` is the stage boundary
+> rather than a defect. The next stage reconnects and proves reachability.
+> Steps 1–2 stand.
+
 ---
 
 ## Stage 1 — CI That Needs No Lab Access
@@ -318,6 +323,41 @@ validation bar is a zero-change full run rather than "it worked once."
 
 ---
 
+## Planned Decision — Tiered Dev Environments (ADR-0002)
+
+Not yet written up as an ADR. Recorded here so the reasoning is not lost.
+
+**Problem.** The only way to test a change today is to deploy it to the
+hypervisor. The workstation is arm64 and the hypervisor is x86_64 (the `kvm`
+role installs `qemu-system-x86`), so no single environment can test all six
+roles.
+
+**Direction.** Give each stage ([ADR-0001](adr/0001-staged-deployment.md)) the
+cheapest environment that can prove it:
+
+| Tier | Environment | Covers | Cannot prove |
+|---|---|---|---|
+| 1 | Molecule with systemd-enabled Debian containers (local, and on GitHub-hosted runners) | `identity`, `baseline`, `security` | Networking, KVM; hostname changes are restricted in containers |
+| 2 | Full Debian VM on the workstation, with a second NIC | `networkd`, `hypervisor-networking`, the cutover; possibly the cloud-init seed | KVM at the right architecture |
+| 3 | The hypervisor | `kvm`, anything architecture-specific | — |
+
+**Consequences to record.**
+
+- Tier 1 runs on GitHub-hosted runners, so Stage 1 grows from lint and syntax
+  to convergence plus Molecule's idempotence check, still with no lab access.
+- Tier 2 makes the cutover rehearsable; the second NIC keeps a failed
+  cutover from taking the test session down with it.
+- `kvm` remains untested before production until there is an x86 target.
+- Once Stage 3 can create VMs, an x86 guest on the hypervisor becomes a real
+  staging tier for guest roles and Kubernetes.
+
+**Options to weigh in the ADR:** containers only, VM only, a second physical
+host, tiers.
+
+**Revisit when:** Terraform can create VMs on the hypervisor.
+
+---
+
 ## Open Decisions
 
 | Decision | Needed by | Notes |
@@ -326,6 +366,7 @@ validation bar is a zero-change full run rather than "it worked once."
 | Terraform state backend | Stage 3 | local state is unworkable for CI |
 | Self-hosted runner vs. Tailscale | Stage 5 | determines whether Seam B exists |
 | Guest platform scope | Stage 4 | reconciles README against `hypervisor-design.md` §2 |
+| Dev environment tiers (ADR-0002) | Before Stage 3 | see "Planned Decision" above |
 
 ---
 
